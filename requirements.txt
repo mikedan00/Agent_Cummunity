@@ -1,6 +1,4 @@
-fastapi
-uvicorn
-jinja2
-python-multipart
-anthropic
-pytest
+streamlit>=1.37
+huggingface_hub>=0.28
+requests>=2.31
+ddgs>=9.0

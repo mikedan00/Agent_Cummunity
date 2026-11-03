@@ -1,0 +1,175 @@
+import json
+from types import SimpleNamespace as NS
+
+import ai_agent
+import web_search
+from chat_store import ChatStore
+from history import read_records
+
+
+# ---- persistence ----
+
+def test_listener_gets_rooms_and_messages_and_restore_rebuilds():
+    records = []
+    s = ChatStore(listener=records.append)
+    s.create_room("dev")
+    s.create_room("dev")  # existing room: no second record
+    s.add_message("dev", "kim", "hi", now=10)
+    s.add_message("dev", "AI", "hello", is_ai=True, now=11)
+    assert [r["type"] for r in records] == ["room", "message", "message"]
+
+    restored_events = []
+    s2 = ChatStore(listener=restored_events.append)
+    s2.restore(json.loads(json.dumps(records)))  # round-trip like JSONL
+    assert "dev" in s2.rooms()
+    assert [(m.author, m.text, m.is_ai) for m in s2.messages("dev")] == [("kim", "hi", False), ("AI", "hello", True)]
+    assert restored_events == []  # restoring must not write records again
+
+
+def test_read_records_merges_files(tmp_path):
+    (tmp_path / "a.jsonl").write_text('{"type": "room", "room": "x", "ts": 1}\n\n', encoding="utf-8")
+    (tmp_path / "b.jsonl").write_text('{"type": "message", "room": "x", "author": "k", "text": "안녕", "ts": 2}\n',
+                                      encoding="utf-8")
+    recs = read_records([tmp_path / "a.jsonl", tmp_path / "b.jsonl"])
+    assert [r["type"] for r in recs] == ["room", "message"]
+    assert recs[1]["text"] == "안녕"
+
+
+# ---- AI agent tool calling ----
+
+def _resp(content=None, tool_calls=None):
+    return NS(choices=[NS(message=NS(content=content, tool_calls=tool_calls))])
+
+
+class FakeClient:
+    def __init__(self, responses, fail_with_tools=False):
+        self.responses = list(responses)
+        self.fail_with_tools = fail_with_tools
+        self.calls = []
+
+    def chat_completion(self, messages, **kw):
+        self.calls.append((list(messages), kw))
+        if self.fail_with_tools and "tools" in kw:
+            raise RuntimeError("tools not supported")
+        return self.responses.pop(0)
+
+
+def _history():
+    from chat_store import Message
+    return [Message("a", "kim", "@AI 오늘 서울 날씨?", 1)]
+
+
+def test_ask_runs_search_tool_and_returns_answer():
+    call = NS(id="c1", function=NS(name="web_search", arguments='{"query": "서울 날씨"}'))
+    client = FakeClient([_resp(tool_calls=[call]), _resp(content="맑음입니다 [1]")])
+    queries = []
+    answer = ai_agent.ask("t", "m", _history(), lambda q: queries.append(q) or "[1] weather", client=client)
+    assert queries == ["서울 날씨"]
+    assert answer.startswith("맑음입니다 [1]")
+    assert "🔎 검색: `서울 날씨`" in answer
+    second_messages = client.calls[1][0]
+    assert second_messages[-1] == {"role": "tool", "tool_call_id": "c1", "content": "[1] weather"}
+
+
+def test_ask_without_tool_call_answers_directly():
+    client = FakeClient([_resp(content="안녕하세요")])
+    assert ai_agent.ask("t", "m", _history(), lambda q: "", client=client) == "안녕하세요"
+
+
+def test_ask_falls_back_when_tools_unsupported():
+    client = FakeClient([_resp(content="검색 없이 답변")], fail_with_tools=True)
+    assert ai_agent.ask("t", "m", _history(), lambda q: "", client=client) == "검색 없이 답변"
+    assert "tools" not in client.calls[-1][1]
+
+
+def test_system_prompt_has_date():
+    from datetime import datetime
+    msgs = ai_agent.build_messages([], now=datetime(2026, 11, 3, 23, 5))
+    assert "2026-11-03 23:05" in msgs[0]["content"]
+
+
+# ---- web search ----
+
+def test_search_uses_tavily_then_falls_back(monkeypatch):
+    monkeypatch.setattr(web_search, "_tavily", lambda q, k, n: [{"title": "T", "url": "u", "snippet": "s"}])
+    monkeypatch.setattr(web_search, "_duckduckgo", lambda q, n: [{"title": "D", "url": "u", "snippet": "s"}])
+    assert web_search.search("q", "key")[0]["title"] == "T"
+    assert web_search.search("q", None)[0]["title"] == "D"
+
+    def boom(q, k, n):
+        raise RuntimeError("down")
+    monkeypatch.setattr(web_search, "_tavily", boom)
+    assert web_search.search("q", "key")[0]["title"] == "D"
+
+
+def test_format_results():
+    assert web_search.format_results([]) == "No results found."
+    out = web_search.format_results([{"title": "T", "url": "https://x", "snippet": "s"}])
+    assert out == "[1] T\nhttps://x\ns"
+
+
+def test_hf_history_downloads_and_appends(monkeypatch, tmp_path):
+    import threading
+    from pathlib import Path
+
+    import history
+
+    created = []
+    monkeypatch.setattr(history, "HfApi", lambda token: NS(create_repo=lambda *a, **k: created.append((a, k))))
+
+    def fake_download(repo_id, local_dir, **kw):
+        d = Path(local_dir) / history.PATH_IN_REPO
+        d.mkdir(parents=True)
+        (d / "old.jsonl").write_text('{"type": "room", "room": "saved", "ts": 1}\n', encoding="utf-8")
+    monkeypatch.setattr(history, "snapshot_download", fake_download)
+
+    class FakeScheduler:
+        def __init__(self, folder_path, **kw):
+            self.folder_path, self.kw, self.lock = Path(folder_path), kw, threading.Lock()
+    monkeypatch.setattr(history, "CommitScheduler", FakeScheduler)
+
+    h = history.HFHistory("me/chats", "tok")
+    assert created[0][1]["private"] is True and created[0][1]["repo_type"] == "dataset"
+    assert h.load() == [{"type": "room", "room": "saved", "ts": 1}]
+    h.append({"type": "message", "text": "안녕"})
+    files = list(h._scheduler.folder_path.glob("*.jsonl"))
+    assert len(files) == 1 and "안녕" in files[0].read_text(encoding="utf-8")
+
+
+# ---- AI name ----
+
+def test_mention_by_ai_name():
+    assert ai_agent.is_ai_mention("모모야 인텔 주가 얼마야?", "모모")
+    assert ai_agent.is_ai_mention("@AI 안녕", "모모")
+    assert not ai_agent.is_ai_mention("모모야 안녕", None)
+    assert not ai_agent.is_ai_mention("안녕 모모", "모모")
+    assert ai_agent.is_ai_mention("Momo, hi", "momo") and ai_agent.is_ai_mention("MOMO hi", "Momo")
+
+
+def test_ai_name_is_per_room_saved_and_restored():
+    import pytest
+    records = []
+    s = ChatStore(listener=records.append)
+    assert s.set_ai_name("a", "  모모 ") == "모모"
+    assert s.ai_name("a") == "모모" and s.ai_name("b") is None
+    with pytest.raises(ValueError):
+        s.set_ai_name("a", "@AI")
+    s2 = ChatStore()
+    s2.restore(records)
+    assert s2.ai_name("a") == "모모"
+
+
+def test_ask_set_ai_name_tool_renames_without_search_tag():
+    call = NS(id="c1", function=NS(name="set_ai_name", arguments='{"name": "모모"}'))
+    client = FakeClient([_resp(tool_calls=[call]), _resp(content="네, 이제 모모예요!")])
+    names, searched = [], []
+    answer = ai_agent.ask("t", "m", _history(), searched.append, set_name=lambda n: names.append(n) or n,
+                          client=client)
+    assert names == ["모모"] and searched == []
+    assert answer == "네, 이제 모모예요!"
+    assert client.calls[1][0][-1]["content"] == "Name changed to 모모."
+
+
+def test_system_prompt_has_ai_name():
+    assert "Your name in this room: 모모." in ai_agent.build_messages([], ai_name="모모")[0]["content"]
+    assert "Your name in this room: AI." in ai_agent.build_messages([])[0]["content"]
