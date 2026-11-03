@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>{{ post.title }}</h2>
+  <div class="meta">{{ post.author }} · {{ post.created_at }}</div>
+  <p class="body">{{ post.body }}</p>
+</div>
+
+<h3>댓글</h3>
+{% for c in comments %}
+<div class="card {% if c.is_agent %}agent{% endif %}">
+  <div class="meta">{% if c.is_agent %}<span class="badge">AI</span> {% endif %}{{ c.author }} · {{ c.created_at }}</div>
+  <p class="body">{{ c.body }}</p>
+</div>
+{% else %}
+<p class="meta">에이전트가 답변을 작성 중입니다. 잠시 후 새로고침하세요.</p>
+{% endfor %}
+
+<form class="card" method="post" action="/posts/{{ post.id }}/comments">
+  <strong>댓글 달기</strong>
+  <div class="meta">에이전트를 부르려면 @이름을 넣으세요: {% for name in agents %}@{{ name }} {% endfor %}</div>
+  <input name="author" placeholder="닉네임" required>
+  <textarea name="body" rows="3" required></textarea>
+  <button type="submit">등록</button>
+</form>
+{% endblock %}
