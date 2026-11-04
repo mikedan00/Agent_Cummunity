@@ -7,7 +7,9 @@ import db
 from chat_store import ChatStore
 from community import NO_TOKEN, Community, mentioned_agents
 from forum_store import ForumStore
-from telegram_bot import TelegramBridge
+from agent_hub import AgentHub
+from telegram_bot import LINK_FIRST, TelegramBridge
+from users import UserStore
 
 AGENTS = {"Optimist": {"name": "Optimist", "persona": "positive"},
           "Critic": {"name": "Critic", "persona": "critical"}}
@@ -131,15 +133,23 @@ class FakeTelegram:
 
 
 def make_bridge():
+    """A bridge whose Telegram user 1001 is linked to the web account '민수'."""
     listeners = []
-    c = make_community(listener=lambda r: [fn(r) for fn in listeners])
+    engine = db.make_engine("sqlite://")
+    emit = lambda r: [fn(r) for fn in listeners]  # noqa: E731
+    users = UserStore(engine)
+    c = Community(ChatStore(listener=emit, engine=engine), ForumStore(listener=emit, engine=engine), AGENTS, "t",
+                  ["org/model-x:prov"], background=False, hub=AgentHub(engine=engine), users=users)
+    minsu = users.set_nickname(users.login("g", "1", "minsu@x").id, "민수")
+    assert users.redeem_link_code(users.issue_link_code(minsu.id), 1001)
     bridge = TelegramBridge("tok", c, http=FakeTelegram())
     listeners.append(bridge.on_record)
     return bridge
 
 
-def update(chat_id, text, name="민수"):
-    return {"update_id": 1, "message": {"chat": {"id": chat_id}, "from": {"first_name": name}, "text": text}}
+def update(chat_id, text, user_id=1001):
+    return {"update_id": 1, "message": {"chat": {"id": chat_id}, "from": {"id": user_id, "first_name": "x"},
+                                        "text": text}}
 
 
 def outbox(bridge):
@@ -190,6 +200,45 @@ def test_telegram_usage_errors():
     texts = [t for _, t in outbox(b)]
     assert texts[:3] == ["사용법: /post 제목 | 내용", "사용법: /comment 번호 내용", "글 #5이 없습니다."]
     assert texts[3].startswith("🤖 Agent Community 봇")
+
+
+def test_unlinked_telegram_user_can_only_read_until_linking(fake_ai):
+    b = make_bridge()
+    users = b.community.users
+    b.handle_update(update(30, "안녕", user_id=2002))
+    b.handle_update(update(30, "/post T | B", user_id=2002))
+    assert [t for _, t in outbox(b)] == [LINK_FIRST, LINK_FIRST]
+    assert b.community.chat.messages("lobby") == [] and b.community.forum.posts() == []
+
+    b.handle_update(update(30, "/link 000000", user_id=2002))
+    assert "코드가 맞지 않거나" in outbox(b)[0][1]
+    lee = users.set_nickname(users.login("g", "2", "lee@x").id, "영희")
+    b.handle_update(update(30, f"/link {users.issue_link_code(lee.id)}", user_id=2002))
+    assert "영희" in outbox(b)[0][1]
+    b.handle_update(update(30, "안녕", user_id=2002))
+    assert b.community.chat.messages("lobby")[-1].author == "영희 (TG)"
+    assert b.community.chat.messages("lobby")[-1].user_id == lee.id
+
+
+def test_link_code_expires_and_works_once():
+    users = UserStore()
+    kim = users.set_nickname(users.login("g", "1", "kim@x").id, "kim")
+    code = users.issue_link_code(kim.id, now=0)
+    assert users.redeem_link_code(code, 5, now=601) is None  # after 10 minutes
+    code = users.issue_link_code(kim.id)
+    assert users.redeem_link_code(code, 5).id == kim.id
+    assert users.redeem_link_code(code, 6) is None  # only once
+    assert users.by_telegram(5).id == kim.id and users.by_telegram(6) is None
+    assert users.telegram_linked(kim.id)
+
+
+def test_telegram_writes_count_against_limits(fake_ai):
+    b = make_bridge()
+    b.community.limits.plans = {"free": dict(b.community.limits.plans["free"], posts_per_day=1)}
+    b.handle_update(update(10, "/post 하나 | 본문"))
+    outbox(b)
+    b.handle_update(update(10, "/post 둘 | 본문"))
+    assert [t for _, t in outbox(b)] == ["오늘 글쓰기 한도(1개)를 다 썼습니다. 내일 다시 올려 주세요."]
 
 
 def test_telegram_call_raises_on_api_error():

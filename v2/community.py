@@ -121,12 +121,15 @@ class Community:
     # ---- forum ----
 
     def create_post(self, title: str, body: str, author: str, model: str | None = None,
-                    user: User | None = None):
-        """A new post; every forum agent comments. Counts against the poster's daily post limit."""
+                    user: User | None = None, on_created=None):
+        """A new post; every forum agent comments. Counts against the poster's daily post limit.
+        `on_created(post)` runs before the agents start replying."""
         self._check_rate(user)
         if user and not self.limits.take(user, "forum_post"):
             raise ValueError(POST_LIMITED.format(n=self.limits.limit(user, "forum_post")))
         post = self.forum.create_post(title, body, author, user_id=user.id if user else None)
+        if on_created:
+            on_created(post)
         self._run(self.agents_reply, post.id, list(self.agents), model, user, False)
         return post
 

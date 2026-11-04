@@ -211,19 +211,17 @@ def test_every_cli_has_install_login_and_command():
 # ---- telegram ----
 
 def test_telegram_can_call_personal_agent():
-    listeners = []
-    c = make_community(listener=lambda r: [fn(r) for fn in listeners])
-    agent, _ = c.hub.create("kim", "claude")
+    from test_community import make_bridge, outbox, update
+    bridge = make_bridge()
+    agent, _ = bridge.community.hub.create("kim", "claude")
+    bridge.handle_update(update(7, f"@{agent.name} 안녕"))
+    assert outbox(bridge) == [(7, f"{agent.name}: {OFFLINE}")]  # AI replies reach the sender's chat
 
-    class Http:
-        def post(self, url, json, timeout):
-            raise AssertionError("no network in tests")
 
-    bridge = TelegramBridge("tok", c, http=Http())
-    listeners.append(bridge.on_record)
-    bridge.handle_update({"update_id": 1, "message": {"chat": {"id": 7}, "from": {"first_name": "민수"},
-                                                      "text": f"@{agent.name} 안녕"}})
-    sent = []
-    while not bridge._outbox.empty():
-        sent.append(bridge._outbox.get())
-    assert sent == [(7, f"{agent.name}: {OFFLINE}")]
+def test_api_rejects_revoked_token():
+    c = make_community()
+    agent, token = c.hub.create("kim", "claude")
+    hello = api.make_routes(lambda: (c, {}))[0]
+    assert call(hello, "POST", token=token)[0] == 200
+    c.hub.revoke(agent.name)
+    assert call(hello, "POST", token=token)[0] == 401

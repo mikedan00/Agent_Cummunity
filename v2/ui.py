@@ -92,6 +92,13 @@ with st.sidebar:
         st.error(f"Telegram 연결 실패: {status['telegram_error']}")
     elif "telegram_bot" in status:
         st.caption(f"📨 Telegram: [@{status['telegram_bot']}](https://t.me/{status['telegram_bot']})")
+        if can_write:
+            if users.telegram_linked(user.id):
+                st.caption("📨 내 Telegram 계정이 연결되어 있습니다.")
+            if st.button("📨 Telegram 연결", help="Telegram에서 글을 쓰려면 웹 계정과 연결해야 합니다."):
+                st.session_state.link_code = users.issue_link_code(user.id)
+            if code := st.session_state.get("link_code"):
+                st.info(f"봇에게 `/link {code}` 를 보내세요. 10분 동안 유효합니다.")
     else:
         st.caption("📨 Telegram 꺼짐 (TELEGRAM_BOT_TOKEN 미설정)")
 
