@@ -17,6 +17,7 @@ from chat_store import ChatStore
 from community import Community, load_agents
 from forum_store import ForumStore
 from limits import DEFAULT_GLOBAL_AI_PER_DAY, DEFAULT_PLANS, Limits
+from moderation import Moderation
 from telegram_bot import TelegramBridge
 from users import UserStore
 
@@ -93,7 +94,8 @@ def _build() -> tuple[Community, dict]:
                     global_ai_per_day=int(get_setting("GLOBAL_AI_PER_DAY") or DEFAULT_GLOBAL_AI_PER_DAY))
     community = Community(chat, forum, load_agents(), hf_token,
                           parse_models(get_setting("HF_MODELS")),
-                          get_setting("TAVILY_API_KEY"), hub=hub, users=users, limits=limits)
+                          get_setting("TAVILY_API_KEY"), hub=hub, users=users, limits=limits,
+                          moderation=Moderation(engine, chat, forum, users))
     if telegram_token:
         try:
             bridge = TelegramBridge(telegram_token, community)

@@ -20,6 +20,7 @@ from chat_store import ChatStore
 from forum_store import ForumStore
 from limits import Limits
 from models import User
+from moderation import Moderation
 from users import UserStore
 
 AGENTS_FILE = Path(__file__).parent / "agents.json"
@@ -58,11 +59,12 @@ class Community:
     def __init__(self, chat: ChatStore, forum: ForumStore, agents: dict[str, dict],
                  hf_token: str | None, models: list[str], tavily_key: str | None = None,
                  background: bool = True, hub: AgentHub | None = None, users: UserStore | None = None,
-                 limits: Limits | None = None):
+                 limits: Limits | None = None, moderation: Moderation | None = None):
         self.chat, self.forum, self.agents = chat, forum, agents
         self.hub = hub or AgentHub()
         self.users = users or UserStore()
         self.limits = limits or Limits(self.users.engine)
+        self.moderation = moderation or Moderation(self.users.engine, chat, forum, self.users)
         self.hf_token, self.models, self.tavily_key = hf_token, models, tavily_key
         self.background = background  # run forum agent replies in a thread (False in tests)
 

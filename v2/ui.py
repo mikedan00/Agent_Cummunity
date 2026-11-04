@@ -32,6 +32,20 @@ def fmt_time(ts: float) -> str:
     return f"{datetime.fromtimestamp(ts, ai_agent.TIMEZONE):%m-%d %H:%M:%S}"
 
 
+def item_actions(target: str, item_id: int, author_id: int | None) -> None:
+    """🚩 report for logged-in users (not on their own items); hide for admins."""
+    if not can_write:
+        return
+    key = f"{target}_{item_id}"
+    cols = st.columns([1, 1, 10])
+    if author_id != user.id and cols[0].button("🚩", key=f"report_{key}", help="신고", type="tertiary"):
+        reported = community.moderation.report(user.id, target, item_id)
+        st.toast("신고했습니다. 관리자가 확인합니다." if reported else "이미 신고했습니다.")
+    if user.is_admin and cols[1].button("🙈", key=f"hide_{key}", help="숨기기 (관리자)", type="tertiary"):
+        community.moderation.hide(target, item_id)
+        st.rerun(scope="fragment")
+
+
 user = auth.current_user(users)
 nickname = user.nickname if user else None
 can_write = bool(nickname) and not user.banned  # visitors and banned users can only read
@@ -102,6 +116,25 @@ with st.sidebar:
     else:
         st.caption("📨 Telegram 꺼짐 (TELEGRAM_BOT_TOKEN 미설정)")
 
+if user and user.is_admin:
+    with st.sidebar.expander(f"🚨 신고 {len(reports := community.moderation.open_reports())}건 (관리자)"):
+        for r in reports:
+            st.markdown(f"**{r['target']} #{r['target_id']}** · {r['author']} · 신고 {r['count']}건")
+            st.caption(r["text"][:200])
+            hide_col, dismiss_col, ban_col = st.columns(3)
+            key = f"{r['target']}_{r['target_id']}"
+            if hide_col.button("숨기기", key=f"adm_hide_{key}"):
+                community.moderation.hide(r["target"], r["target_id"])
+                st.rerun()
+            if dismiss_col.button("무시", key=f"adm_dismiss_{key}"):
+                community.moderation.resolve(r["target"], r["target_id"])
+                st.rerun()
+            if r["author_id"] and ban_col.button("작성자 차단", key=f"adm_ban_{key}"):
+                community.moderation.ban_author(r["target"], r["target_id"])
+                st.rerun()
+        if not reports:
+            st.caption("처리할 신고가 없습니다.")
+
 if not can_write:
     st.info("👀 읽기 전용입니다. 왼쪽에서 로그인하고 닉네임을 정하면 대화에 참여할 수 있습니다.")
 
@@ -121,6 +154,7 @@ def chat_view():
         with st.chat_message("assistant" if m.is_ai else "user", avatar="🤖" if m.is_ai else None):
             st.markdown(f"**{m.author}** · {fmt_time(m.ts)}")
             st.markdown(m.text)
+            item_actions("message", m.id, m.user_id)
 
 
 with chat_tab:
@@ -163,14 +197,19 @@ with forum_tab:
         @st.fragment(run_every=REFRESH_SEC)
         def post_view():
             post = forum.post(post_id)
+            if post is None:  # hidden by an admin meanwhile
+                st.info("숨겨진 글입니다.")
+                return
             with st.container(border=True):
                 st.markdown(f"### {post.title}")
                 st.caption(f"{post.author} · {fmt_time(post.ts)}")
                 st.markdown(post.body)
+                item_actions("post", post.id, post.user_id)
             for c in forum.comments(post_id):
                 with st.chat_message("assistant" if c.is_ai else "user", avatar="🤖" if c.is_ai else None):
                     st.markdown(f"**{c.author}** · {fmt_time(c.ts)}")
                     st.markdown(c.text)
+                    item_actions("comment", c.id, c.user_id)
 
         post_view()
         if can_write:

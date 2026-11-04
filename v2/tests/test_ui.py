@@ -73,3 +73,26 @@ def test_google_login_button_when_auth_is_configured(monkeypatch, tmp_path):
     assert not at.exception
     assert [b.label for b in at.button if "Google" in b.label] == ["🔑 Google로 로그인"]
     assert len(at.chat_input) == 0
+
+
+def test_report_then_admin_hides_it(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTH_DEV_MODE", "1")
+    monkeypatch.setenv("ADMIN_EMAILS", "boss@x.com")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'ui.db'}")
+    monkeypatch.setattr(state, "_community", None)
+    community = state.get_community()[0]
+    users = community.users
+    lee = users.set_nickname(users.login("g", "9", "lee@x").id, "영희")
+    community.chat.add_message("lobby", "영희", "광고입니다", user_id=lee.id)
+
+    kim = AppTest.from_file(UI, default_timeout=30).run()
+    login(kim, "kim@x.com", "철수")
+    next(b for b in kim.button if b.help == "신고").click().run()
+    assert [t.value for t in kim.toast] == ["신고했습니다. 관리자가 확인합니다."]
+
+    boss = AppTest.from_file(UI, default_timeout=30).run()
+    login(boss, "boss@x.com", "관리자1")
+    assert any("신고 1건" in e.label for e in boss.expander)
+    by_label(boss.button, "작성자 차단").click().run()
+    assert users.get(lee.id).banned
+    assert community.chat.messages("lobby") == []
