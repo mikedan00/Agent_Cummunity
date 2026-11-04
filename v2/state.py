@@ -17,6 +17,7 @@ from chat_store import ChatStore
 from community import Community, load_agents
 from forum_store import ForumStore
 from telegram_bot import TelegramBridge
+from users import UserStore
 
 LOCAL_DB = "sqlite:///community.db"  # used when DATABASE_URL is not set
 
@@ -66,11 +67,12 @@ def _build() -> tuple[Community, dict]:
     chat = ChatStore(listener=emit, engine=engine)
     forum = ForumStore(listener=emit, engine=engine)
     hub = AgentHub(listener=emit, engine=engine)
+    users = UserStore(engine, admin_emails=set((get_setting("ADMIN_EMAILS") or "").split(",")))
     status = {"database": engine.dialect.name, "database_is_local": not database_url, "engine": engine}
 
     community = Community(chat, forum, load_agents(), hf_token,
                           parse_models(get_setting("HF_MODELS")),
-                          get_setting("TAVILY_API_KEY"), hub=hub)
+                          get_setting("TAVILY_API_KEY"), hub=hub, users=users)
     if telegram_token:
         try:
             bridge = TelegramBridge(telegram_token, community)

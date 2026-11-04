@@ -7,18 +7,18 @@ import streamlit as st
 
 import agent_connector
 import ai_agent
+import auth
 from chat_store import DEFAULT_ROOM
 from state import get_community
 
 REFRESH_SEC = 2
 MAX_MESSAGE_LEN = 1000
-MAX_NICKNAME = 20
 CONNECTOR_FILE = Path(__file__).parent / "agent_connector.py"
 
 st.set_page_config(page_title="Agent Community", page_icon="💬")
 
 community, status = get_community()
-chat, forum, hub = community.chat, community.forum, community.hub
+chat, forum, hub, users = community.chat, community.forum, community.hub, community.users
 hf_token, hf_models = community.hf_token, community.models
 tavily_key = community.tavily_key
 
@@ -32,17 +32,39 @@ def fmt_time(ts: float) -> str:
     return f"{datetime.fromtimestamp(ts, ai_agent.TIMEZONE):%m-%d %H:%M:%S}"
 
 
-# ---- Sidebar: nickname, rooms, AI and integration status ----
+user = auth.current_user(users)
+nickname = user.nickname if user else None
+can_write = bool(nickname) and not user.banned  # visitors and banned users can only read
+
+# ---- Sidebar: account, rooms, AI and integration status ----
 with st.sidebar:
     st.header("💬 Agent Community")
-    nickname = st.text_input("닉네임", max_chars=MAX_NICKNAME, key="nickname").strip()
+    if user is None:
+        auth.login_widget()
+    elif not nickname:
+        st.info("처음 오셨네요! 커뮤니티에서 쓸 닉네임을 정해 주세요. 나중에 바꿀 수 없습니다.")
+        with st.form("nickname"):
+            wanted = st.text_input("닉네임 (2~20자: 한글, 영문, 숫자, _)")
+            if st.form_submit_button("정하기"):
+                try:
+                    users.set_nickname(user.id, wanted, taken=set(community.agents) | hub.names())
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
+    else:
+        st.caption(f"👤 **{nickname}** · {user.email or ''}" + (" · 관리자" if user.is_admin else ""))
+    if user:
+        st.button("로그아웃", on_click=auth.logout)
+        if user.banned:
+            st.error("차단된 계정입니다. 읽기만 할 수 있습니다.")
 
     # The form comes before the room selectbox: a widget's session_state key
     # can only be set before that widget is drawn in the current run.
-    with st.form("new_room", clear_on_submit=True):
-        new_room = st.text_input("새 채팅방 만들기")
-        if st.form_submit_button("만들기") and new_room.strip():
-            st.session_state.room = chat.create_room(new_room)
+    if can_write:
+        with st.form("new_room", clear_on_submit=True):
+            new_room = st.text_input("새 채팅방 만들기")
+            if st.form_submit_button("만들기") and new_room.strip():
+                st.session_state.room = chat.create_room(new_room, user_id=user.id)
 
     st.selectbox("채팅방", chat.rooms(), key="room")
 
@@ -70,9 +92,8 @@ with st.sidebar:
     else:
         st.caption("📨 Telegram 꺼짐 (TELEGRAM_BOT_TOKEN 미설정)")
 
-if not nickname:
-    st.info("왼쪽 사이드바에 닉네임을 입력하면 대화에 참여할 수 있습니다.")
-    st.stop()
+if not can_write:
+    st.info("👀 읽기 전용입니다. 왼쪽에서 로그인하고 닉네임을 정하면 대화에 참여할 수 있습니다.")
 
 chat_tab, forum_tab, connect_tab = st.tabs(["💬 채팅", "📝 포럼", "🔌 내 AI 연결"])
 
@@ -83,7 +104,8 @@ ai_name = chat.ai_name(room)
 
 @st.fragment(run_every=REFRESH_SEC)
 def chat_view():
-    chat.touch(room, st.session_state.session_id, nickname)
+    if nickname:
+        chat.touch(room, st.session_state.session_id, nickname)
     st.caption("접속 중: " + ", ".join(chat.online(room)))
     for m in chat.messages(room):
         with st.chat_message("assistant" if m.is_ai else "user", avatar="🤖" if m.is_ai else None):
@@ -97,22 +119,24 @@ with chat_tab:
                " — 이름을 지어주려면 `@AI 너의 이름은 모모야`. 개인 AI 에이전트는 `@이름_claude`처럼 부르세요.")
     chat_view()
     placeholder = f"메시지 입력 (@AI{' 또는 ' + ai_name if ai_name else ''} 로 AI 호출)"
-    if text := st.chat_input(placeholder, max_chars=MAX_MESSAGE_LEN):
+    if can_write and (text := st.chat_input(placeholder, max_chars=MAX_MESSAGE_LEN)):
         with st.spinner("AI가 답변을 작성 중입니다..."):
-            community.send_chat(room, nickname, text, hf_model)
+            community.send_chat(room, nickname, text, hf_model, user=user)
         st.rerun()
 
 # ---- Forum ----
 with forum_tab:
-    with st.expander("✏️ 새 아이디어 올리기"):
-        with st.form("new_post", clear_on_submit=True):
-            title = st.text_input("제목", max_chars=100)
-            body = st.text_area("내용", placeholder="아이디어를 적으면 에이전트들이 댓글을 답니다.")
-            if st.form_submit_button("등록"):
-                try:
-                    st.session_state.post_id = community.create_post(title, body, nickname, hf_model).id
-                except ValueError as e:
-                    st.error(str(e))
+    if can_write:
+        with st.expander("✏️ 새 아이디어 올리기"):
+            with st.form("new_post", clear_on_submit=True):
+                title = st.text_input("제목", max_chars=100)
+                body = st.text_area("내용", placeholder="아이디어를 적으면 에이전트들이 댓글을 답니다.")
+                if st.form_submit_button("등록"):
+                    try:
+                        st.session_state.post_id = community.create_post(title, body, nickname, hf_model,
+                                                                         user=user).id
+                    except ValueError as e:
+                        st.error(str(e))
 
     posts = forum.posts()
     if not posts:
@@ -136,11 +160,15 @@ with forum_tab:
                     st.markdown(c.text)
 
         post_view()
-        with st.form("new_comment", clear_on_submit=True):
-            comment = st.text_area("댓글", placeholder="@" + " @".join(community.agents) + " 로 에이전트를 부를 수 있습니다.")
-            if st.form_submit_button("댓글 등록") and comment.strip():
-                community.add_comment(post_id, nickname, comment.strip(), hf_model)
-                st.rerun()
+        if can_write:
+            with st.form("new_comment", clear_on_submit=True):
+                comment = st.text_area("댓글", placeholder="@" + " @".join(community.agents) + " 로 에이전트를 부를 수 있습니다.")
+                if st.form_submit_button("댓글 등록") and comment.strip():
+                    try:
+                        community.add_comment(post_id, nickname, comment.strip(), hf_model, user=user)
+                    except ValueError as e:
+                        st.error(str(e))
+                    st.rerun()
 
 # ---- Connect your own AI CLI ----
 with connect_tab:
@@ -177,10 +205,12 @@ with connect_tab:
     st.caption("토큰 없이 `python agent_connector.py`만 실행하면 설치·로그인 메뉴가 열립니다.")
 
     st.markdown("**4. 내 에이전트 만들기**")
-    if st.button(f"@{nickname}_{cli} 에이전트 만들기"):
-        agent, token = hub.create(nickname, cli)
+    if not can_write:
+        st.caption("로그인하고 닉네임을 정하면 에이전트를 만들 수 있습니다.")
+    elif st.button(f"@{nickname}_{cli} 에이전트 만들기"):
+        agent, token = hub.create(nickname, cli, owner_id=user.id)
         st.session_state.new_agent = {"name": agent.name, "cli": cli, "token": token}
-    if new := st.session_state.get("new_agent"):
+    if can_write and (new := st.session_state.get("new_agent")):
         url = urlsplit(st.context.url or "http://localhost:8501")
         server = f"{url.scheme}://{url.netloc}"
         st.success(f"@{new['name']} 를 만들었습니다. 노트북 터미널에서 아래 명령을 실행하세요.")
@@ -188,3 +218,14 @@ with connect_tab:
                 language="bash")
         st.warning("토큰은 지금 한 번만 보입니다. 다른 사람에게 보여주지 마세요 — 토큰이 있으면 이 에이전트로 답할 수 있습니다.")
     st.caption("커넥터가 켜져 있는 동안 채팅이나 포럼 댓글에서 `@이름`으로 부르면 답합니다.")
+
+    if can_write and (mine := hub.agents(owner_id=user.id)):
+        st.markdown("**내 에이전트**")
+        for agent in mine:
+            label_col, button_col = st.columns([4, 1])
+            label_col.write(community.personal_label(agent))
+            if button_col.button("폐기", key=f"revoke_{agent.name}",
+                                 help="토큰이 유출됐을 때: 폐기하면 그 토큰으로는 더 이상 접속할 수 없습니다."):
+                hub.revoke(agent.name, owner_id=user.id)
+                st.session_state.pop("new_agent", None)
+                st.rerun()

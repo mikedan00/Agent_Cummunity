@@ -17,6 +17,8 @@ import web_search
 from agent_hub import CLIS, AgentHub, PersonalAgent
 from chat_store import ChatStore
 from forum_store import ForumStore
+from models import User
+from users import UserStore
 
 AGENTS_FILE = Path(__file__).parent / "agents.json"
 NO_TOKEN = "HF_TOKEN이 설정되지 않아 답할 수 없습니다."
@@ -48,9 +50,10 @@ def model_label(model: str) -> str:
 class Community:
     def __init__(self, chat: ChatStore, forum: ForumStore, agents: dict[str, dict],
                  hf_token: str | None, models: list[str], tavily_key: str | None = None,
-                 background: bool = True, hub: AgentHub | None = None):
+                 background: bool = True, hub: AgentHub | None = None, users: UserStore | None = None):
         self.chat, self.forum, self.agents = chat, forum, agents
         self.hub = hub or AgentHub()
+        self.users = users or UserStore()
         self.hf_token, self.models, self.tavily_key = hf_token, models, tavily_key
         self.background = background  # run forum agent replies in a thread (False in tests)
 
@@ -62,8 +65,9 @@ class Community:
     def is_ai_call(self, room: str, text: str) -> bool:
         return ai_agent.is_ai_mention(text, self.chat.ai_name(room))
 
-    def send_chat(self, room: str, author: str, text: str, model: str | None = None) -> None:
-        self.chat.add_message(room, author, text)
+    def send_chat(self, room: str, author: str, text: str, model: str | None = None,
+                  user: User | None = None) -> None:
+        self.chat.add_message(room, author, text, user_id=user.id if user else None)
         self.respond_chat(room, text, model)
 
     def respond_chat(self, room: str, text: str, model: str | None = None) -> None:
@@ -90,13 +94,15 @@ class Community:
 
     # ---- forum ----
 
-    def create_post(self, title: str, body: str, author: str, model: str | None = None):
-        post = self.forum.create_post(title, body, author)
+    def create_post(self, title: str, body: str, author: str, model: str | None = None,
+                    user: User | None = None):
+        post = self.forum.create_post(title, body, author, user_id=user.id if user else None)
         self._run(self.agents_reply, post.id, list(self.agents), model)
         return post
 
-    def add_comment(self, post_id: int, author: str, text: str, model: str | None = None) -> None:
-        self.forum.add_comment(post_id, author, text)
+    def add_comment(self, post_id: int, author: str, text: str, model: str | None = None,
+                    user: User | None = None) -> None:
+        self.forum.add_comment(post_id, author, text, user_id=user.id if user else None)
         self.reply_to_mentions(post_id, text, model)
 
     def reply_to_mentions(self, post_id: int, text: str, model: str | None = None) -> None:
