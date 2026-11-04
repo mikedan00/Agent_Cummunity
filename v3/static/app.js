@@ -318,6 +318,7 @@ async function loadAdmin() {
   for (const k of ["ai_per_day", "posts_per_day", "agent_calls_per_hour", "messages_per_min"]) f[k].value = s.limits[k];
   f.global_ai_per_day.value = s.global_ai_per_day;
   f.host_agent_cli.value = s.host_agent_cli;
+  $("#host-agent-status").textContent = `상태: ${S.state.host_agent}. 앱 안에서는 도구를 모두 끈 Claude Code만 실행합니다. 호스트 구독 사용량이 나가며 시간당 호출 한도가 적용됩니다.`;
   await loadReports();
 }
 

@@ -148,6 +148,7 @@ def create_app(config: Config, engine=None) -> FastAPI:
     app.state.telegram_bot = None
     app.state.on_global_cap = lambda cap: None
     app.state.on_settings = lambda: None
+    app.state.host_agent_status = lambda: "꺼짐"
 
     # ---- who is asking ----
 
@@ -242,6 +243,7 @@ def create_app(config: Config, engine=None) -> FastAPI:
             "usage": usage,
             "server_url": base_url(request),
             "invite_url": invite_url(request) if admin else None,
+            "host_agent": app.state.host_agent_status() if admin else None,
             "telegram_bot": app.state.telegram_bot,
         }
 

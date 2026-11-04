@@ -97,6 +97,11 @@ class AgentHub:
             self._last_seen[row.name] = time.time()
         return _agent(row)
 
+    def touch(self, name: str) -> None:
+        """Mark an agent online without a token (the host agent runs inside the app)."""
+        with self._cond:
+            self._last_seen[name] = time.time()
+
     def agents(self, owner_id: int | None = None) -> list[PersonalAgent]:
         """Active agents, oldest first (only this owner's when owner_id is given)."""
         a = db.personal_agents.c

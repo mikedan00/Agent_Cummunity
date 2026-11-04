@@ -61,6 +61,11 @@ class UserStore:
             row = conn.execute(select(db.users).where(u.issuer == issuer, u.subject == subject)).first()
         return _user(row) if row else None
 
+    def admins(self) -> list[User]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(select(db.users).where(db.users.c.role == "admin").order_by(db.users.c.id)).all()
+        return [_user(r) for r in rows]
+
     def set_role(self, user_id: int, role: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(update(db.users).where(db.users.c.id == user_id).values(role=role))

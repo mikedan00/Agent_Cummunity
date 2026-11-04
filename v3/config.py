@@ -54,6 +54,7 @@ def defaults() -> dict:
         "global_ai_per_day": DEFAULT_GLOBAL_AI_PER_DAY,
         "tunnel": "quick",  # quick (trycloudflare.com) | token (named Cloudflare tunnel) | off
         "tunnel_token": "",
+        "public_url": "",  # with tunnel=token: the hostname set up in Cloudflare, e.g. https://chat.example.com
         "host_agent_cli": "",  # "claude" runs the host's Claude Code as an agent inside the app
         "database_url": "",  # empty: SQLite in the data folder
     }
