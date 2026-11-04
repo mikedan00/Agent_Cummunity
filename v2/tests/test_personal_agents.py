@@ -9,6 +9,7 @@ from starlette.requests import Request
 
 import agent_connector
 import api
+import db
 from agent_hub import AgentHub
 from chat_store import ChatStore
 from community import OFFLINE, Community
@@ -37,20 +38,55 @@ def test_create_names_are_unique_and_tokens_authenticate():
     with pytest.raises(ValueError):
         hub.create("kim", "unknown-cli")
 
-    restored = AgentHub()
-    restored.restore(records + [{"type": "message", "ts": 0}])
-    assert restored.authenticate(t1).name == "철수김_claude"
+
+
+def test_revoked_token_stops_working_and_name_is_not_reused():
+    hub = AgentHub()
+    kim, lee = db.add_test_user(hub._engine, "kim@x"), db.add_test_user(hub._engine, "lee@x")
+    agent, token = hub.create("kim", "claude", owner_id=kim)
+    assert not hub.revoke(agent.name, owner_id=lee)  # not the owner
+    assert hub.revoke(agent.name, owner_id=kim)
+    assert hub.authenticate(token) is None and hub.agents() == []
+    assert hub.create("kim", "claude")[0].name == "kim_claude2"
+
+
+def test_agents_by_owner():
+    hub = AgentHub()
+    kim, lee = db.add_test_user(hub._engine, "kim@x"), db.add_test_user(hub._engine, "lee@x")
+    hub.create("kim", "claude", owner_id=kim)
+    hub.create("lee", "codex", owner_id=lee)
+    assert [a.name for a in hub.agents(owner_id=lee)] == ["lee_codex"]
 
 
 def test_tasks_queue_wait_and_complete_only_by_owner():
     hub = AgentHub()
-    assert hub.next_task("a", timeout=0) is None
-    task = hub.enqueue("a", {"kind": "chat", "room": "lobby", "prompt": "p"})
-    assert hub.next_task("b", timeout=0) is None
-    assert hub.next_task("a", timeout=0) == task
-    assert hub.complete("b", task["id"]) is None  # another agent can't answer it
-    assert hub.complete("a", task["id"])["room"] == "lobby"
-    assert hub.complete("a", task["id"]) is None  # only once
+    a = hub.create("a", "claude")[0].name
+    b = hub.create("b", "claude")[0].name
+    assert hub.next_task(a, timeout=0) is None
+    task = hub.enqueue(a, {"kind": "chat", "room": "lobby", "prompt": "p"})
+    assert hub.next_task(b, timeout=0) is None
+    assert hub.next_task(a, timeout=0) == task
+    assert hub.next_task(a, timeout=0) is None  # taken only once
+    assert hub.complete(b, task["id"]) is None  # another agent can't answer it
+    assert hub.complete(a, "bogus") is None
+    assert hub.complete(a, task["id"])["room"] == "lobby"
+    assert hub.complete(a, task["id"]) is None  # only once
+    assert hub.calls_since(a, 0) == 1
+
+
+def test_waiting_connector_wakes_up_when_a_task_arrives():
+    import threading
+    import time
+    hub = AgentHub()
+    name = hub.create("kim", "claude")[0].name
+    got = []
+    waiter = threading.Thread(target=lambda: got.append(hub.next_task(name, timeout=5)))
+    waiter.start()
+    time.sleep(0.2)
+    start = time.monotonic()
+    hub.enqueue(name, {"kind": "forum", "post_id": 3, "prompt": "p"})
+    waiter.join(5)
+    assert got and got[0]["post_id"] == 3 and time.monotonic() - start < 2
 
 
 def test_online_follows_last_seen():

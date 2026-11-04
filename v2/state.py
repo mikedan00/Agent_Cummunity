@@ -11,12 +11,14 @@ import threading
 import streamlit as st
 
 import ai_agent
+import db
 from agent_hub import AgentHub
 from chat_store import ChatStore
 from community import Community, load_agents
 from forum_store import ForumStore
-from history import HFHistory
 from telegram_bot import TelegramBridge
+
+LOCAL_DB = "sqlite:///community.db"  # used when DATABASE_URL is not set
 
 _lock = threading.Lock()
 _community: tuple[Community, dict] | None = None
@@ -42,7 +44,7 @@ def parse_models(value) -> list[str]:
 
 
 def get_community() -> tuple[Community, dict]:
-    """Returns (community, status) — status holds history/telegram errors and the bot name."""
+    """Returns (community, status) — status holds the database kind, telegram errors and the bot name."""
     global _community
     with _lock:
         if _community is None:
@@ -52,25 +54,19 @@ def get_community() -> tuple[Community, dict]:
 
 def _build() -> tuple[Community, dict]:
     hf_token = get_setting("HF_TOKEN")
-    dataset_repo = get_setting("HF_DATASET_REPO")
     telegram_token = get_setting("TELEGRAM_BOT_TOKEN")
+    database_url = get_setting("DATABASE_URL")
+    engine = db.make_engine(database_url or LOCAL_DB)
     listeners = []
 
     def emit(record: dict) -> None:
         for listener in listeners:
             listener(record)
 
-    chat, forum, hub = ChatStore(listener=emit), ForumStore(listener=emit), AgentHub(listener=emit)
-    status = {"dataset_repo": dataset_repo if hf_token else None}
-    if hf_token and dataset_repo:
-        try:
-            history = HFHistory(dataset_repo, hf_token)
-            records = history.load()
-            for store in (chat, forum, hub):
-                store.restore(records)
-            listeners.append(history.append)
-        except Exception as e:
-            status["history_error"] = str(e)
+    chat = ChatStore(listener=emit, engine=engine)
+    forum = ForumStore(listener=emit, engine=engine)
+    hub = AgentHub(listener=emit, engine=engine)
+    status = {"database": engine.dialect.name, "database_is_local": not database_url, "engine": engine}
 
     community = Community(chat, forum, load_agents(), hf_token,
                           parse_models(get_setting("HF_MODELS")),

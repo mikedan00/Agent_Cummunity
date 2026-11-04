@@ -1,9 +1,9 @@
-import json
 from types import SimpleNamespace as NS
 
 import pytest
 
 import ai_agent
+import db
 from chat_store import ChatStore
 from community import NO_TOKEN, Community, mentioned_agents
 from forum_store import ForumStore
@@ -29,30 +29,37 @@ def fake_ai(monkeypatch):
 
 # ---- forum store ----
 
-def test_forum_posts_comments_and_restore():
+def test_forum_posts_comments_and_persistence(tmp_path):
+    url = f"sqlite:///{tmp_path / 'f.db'}"
     records = []
-    f = ForumStore(listener=records.append)
+    f = ForumStore(listener=records.append, engine=db.make_engine(url))
     p1 = f.create_post(" 아이디어 ", "본문", "kim", now=1)
     p2 = f.create_post("둘째", "본문2", "lee", now=2)
     f.add_comment(p1.id, "Critic", "위험", is_ai=True, now=3)
     assert (p1.id, p1.title, p2.id) == (1, "아이디어", 2)
     assert [p.id for p in f.posts()] == [2, 1]
+    assert [r["type"] for r in records] == ["post", "post", "comment"]
     with pytest.raises(KeyError):
         f.add_comment(99, "x", "y")
     with pytest.raises(ValueError):
         f.create_post(" ", "body", "kim")
 
-    f2 = ForumStore()
-    f2.restore(json.loads(json.dumps(records)) + [{"type": "message", "room": "lobby", "ts": 0}])
+    f2 = ForumStore(engine=db.make_engine(url))  # like a server restart
     assert [p.title for p in f2.posts()] == ["둘째", "아이디어"]
     assert [(c.author, c.is_ai) for c in f2.comments(1)] == [("Critic", True)]
-    assert f2.create_post("셋째", "b", "kim").id == 3  # ids continue after restore
+    assert f2.create_post("셋째", "b", "kim").id == 3
 
 
-def test_chat_store_ignores_forum_records():
-    s = ChatStore()
-    s.restore([{"type": "post", "id": 1, "title": "t", "body": "b", "author": "a", "ts": 1}])
-    assert s.messages("lobby") == []
+def test_hidden_posts_and_comments_disappear():
+    f = ForumStore()
+    p = f.create_post("T", "B", "kim")
+    c = f.add_comment(p.id, "lee", "spam")
+    f.hide_comment(c.id)
+    assert f.comments(p.id) == []
+    f.hide_post(p.id)
+    assert f.posts() == [] and f.post(p.id) is None
+    with pytest.raises(KeyError):
+        f.add_comment(p.id, "lee", "x")  # hidden posts take no comments
 
 
 # ---- community ----

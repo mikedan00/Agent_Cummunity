@@ -1,38 +1,34 @@
-import json
 from types import SimpleNamespace as NS
 
 import ai_agent
+import db
 import web_search
 from chat_store import ChatStore
-from history import read_records
 
 
 # ---- persistence ----
 
-def test_listener_gets_rooms_and_messages_and_restore_rebuilds():
+def test_listener_gets_rooms_and_messages_and_data_survives_restart(tmp_path):
+    engine = db.make_engine(f"sqlite:///{tmp_path / 'c.db'}")
     records = []
-    s = ChatStore(listener=records.append)
+    s = ChatStore(listener=records.append, engine=engine)
     s.create_room("dev")
     s.create_room("dev")  # existing room: no second record
     s.add_message("dev", "kim", "hi", now=10)
     s.add_message("dev", "AI", "hello", is_ai=True, now=11)
     assert [r["type"] for r in records] == ["room", "message", "message"]
 
-    restored_events = []
-    s2 = ChatStore(listener=restored_events.append)
-    s2.restore(json.loads(json.dumps(records)))  # round-trip like JSONL
+    engine.dispose()  # like a server restart: a new engine on the same database
+    s2 = ChatStore(engine=db.make_engine(f"sqlite:///{tmp_path / 'c.db'}"))
     assert "dev" in s2.rooms()
     assert [(m.author, m.text, m.is_ai) for m in s2.messages("dev")] == [("kim", "hi", False), ("AI", "hello", True)]
-    assert restored_events == []  # restoring must not write records again
 
 
-def test_read_records_merges_files(tmp_path):
-    (tmp_path / "a.jsonl").write_text('{"type": "room", "room": "x", "ts": 1}\n\n', encoding="utf-8")
-    (tmp_path / "b.jsonl").write_text('{"type": "message", "room": "x", "author": "k", "text": "안녕", "ts": 2}\n',
-                                      encoding="utf-8")
-    recs = read_records([tmp_path / "a.jsonl", tmp_path / "b.jsonl"])
-    assert [r["type"] for r in recs] == ["room", "message"]
-    assert recs[1]["text"] == "안녕"
+def test_hidden_message_is_not_shown():
+    s = ChatStore()
+    keep, hide = s.add_message("a", "kim", "keep"), s.add_message("a", "kim", "spam")
+    s.hide_message(hide.id)
+    assert [m.id for m in s.messages("a")] == [keep.id]
 
 
 # ---- AI agent tool calling ----
@@ -108,34 +104,6 @@ def test_format_results():
     assert out == "[1] T\nhttps://x\ns"
 
 
-def test_hf_history_downloads_and_appends(monkeypatch, tmp_path):
-    import threading
-    from pathlib import Path
-
-    import history
-
-    created = []
-    monkeypatch.setattr(history, "HfApi", lambda token: NS(create_repo=lambda *a, **k: created.append((a, k))))
-
-    def fake_download(repo_id, local_dir, **kw):
-        d = Path(local_dir) / history.PATH_IN_REPO
-        d.mkdir(parents=True)
-        (d / "old.jsonl").write_text('{"type": "room", "room": "saved", "ts": 1}\n', encoding="utf-8")
-    monkeypatch.setattr(history, "snapshot_download", fake_download)
-
-    class FakeScheduler:
-        def __init__(self, folder_path, **kw):
-            self.folder_path, self.kw, self.lock = Path(folder_path), kw, threading.Lock()
-    monkeypatch.setattr(history, "CommitScheduler", FakeScheduler)
-
-    h = history.HFHistory("me/chats", "tok")
-    assert created[0][1]["private"] is True and created[0][1]["repo_type"] == "dataset"
-    assert h.load() == [{"type": "room", "room": "saved", "ts": 1}]
-    h.append({"type": "message", "text": "안녕"})
-    files = list(h._scheduler.folder_path.glob("*.jsonl"))
-    assert len(files) == 1 and "안녕" in files[0].read_text(encoding="utf-8")
-
-
 # ---- AI name ----
 
 def test_mention_by_ai_name():
@@ -146,7 +114,7 @@ def test_mention_by_ai_name():
     assert ai_agent.is_ai_mention("Momo, hi", "momo") and ai_agent.is_ai_mention("MOMO hi", "Momo")
 
 
-def test_ai_name_is_per_room_saved_and_restored():
+def test_ai_name_is_per_room_and_saved():
     import pytest
     records = []
     s = ChatStore(listener=records.append)
@@ -154,9 +122,7 @@ def test_ai_name_is_per_room_saved_and_restored():
     assert s.ai_name("a") == "모모" and s.ai_name("b") is None
     with pytest.raises(ValueError):
         s.set_ai_name("a", "@AI")
-    s2 = ChatStore()
-    s2.restore(records)
-    assert s2.ai_name("a") == "모모"
+    assert records[-1] == {"type": "ai_name", "room": "a", "name": "모모", "ts": records[-1]["ts"]}
 
 
 def test_ask_set_ai_name_tool_renames_without_search_tag():

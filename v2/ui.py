@@ -20,7 +20,7 @@ st.set_page_config(page_title="Agent Community", page_icon="💬")
 community, status = get_community()
 chat, forum, hub = community.chat, community.forum, community.hub
 hf_token, hf_models = community.hf_token, community.models
-dataset_repo, tavily_key = status["dataset_repo"], community.tavily_key
+tavily_key = community.tavily_key
 
 if "session_id" not in st.session_state:
     st.session_state.session_id = uuid.uuid4().hex
@@ -58,12 +58,10 @@ with st.sidebar:
     if personal := hub.agents():
         st.caption("개인 AI 에이전트:\n\n" + "\n\n".join(community.personal_label(a) for a in personal))
 
-    if "history_error" in status:
-        st.error(f"대화 기록 저장 실패: {status['history_error']}")
-    elif dataset_repo and hf_token:
-        st.caption(f"💾 기록 저장: `{dataset_repo}` (1분마다)")
+    if status["database_is_local"]:
+        st.caption("💾 저장: 로컬 SQLite (`community.db`) — 배포 시 DATABASE_URL을 설정하세요")
     else:
-        st.caption("💾 기록 저장 꺼짐 (HF_DATASET_REPO 미설정)")
+        st.caption(f"💾 저장: {status['database']} 데이터베이스")
 
     if "telegram_error" in status:
         st.error(f"Telegram 연결 실패: {status['telegram_error']}")

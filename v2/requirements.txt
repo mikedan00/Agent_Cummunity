@@ -2,3 +2,5 @@ streamlit>=1.66
 huggingface_hub>=0.28
 requests>=2.31
 ddgs>=9.0
+sqlalchemy>=2.0
+psycopg[binary]>=3.2

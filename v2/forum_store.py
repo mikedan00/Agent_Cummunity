@@ -1,86 +1,82 @@
-"""In-memory forum (posts and comments) shared by every browser and the Telegram bot.
+"""Forum posts and comments in the database.
 
-Like ChatStore, every change is passed to `listener` as a record so it can be
-saved, and `restore` rebuilds the forum from saved records.
+Every saved post/comment is also passed to `listener` as a record
+(the Telegram bot forwards comments from it).
 """
 
-import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from typing import Callable
+
+from sqlalchemy import insert, select, update
+from sqlalchemy.engine import Engine
+
+import db
+from models import Comment, Post
 
 MAX_TITLE = 100
 
-
-@dataclass(frozen=True)
-class Post:
-    id: int
-    title: str
-    body: str
-    author: str
-    ts: float
+__all__ = ["Comment", "ForumStore", "Post"]
 
 
-@dataclass(frozen=True)
-class Comment:
-    post_id: int
-    author: str
-    text: str
-    ts: float
-    is_ai: bool = False
+def _post(r) -> Post:
+    return Post(r.id, r.title, r.body, r.author, r.ts, r.user_id)
 
 
 class ForumStore:
-    def __init__(self, listener: Callable[[dict], None] | None = None):
+    def __init__(self, listener: Callable[[dict], None] | None = None, engine: Engine | None = None):
+        self._engine = engine or db.make_engine("sqlite://")
         self._listener = listener
-        self._lock = threading.Lock()
-        self._posts: dict[int, Post] = {}
-        self._comments: dict[int, list[Comment]] = {}
 
-    def create_post(self, title: str, body: str, author: str, now: float | None = None) -> Post:
+    def create_post(self, title: str, body: str, author: str, now: float | None = None,
+                    user_id: int | None = None) -> Post:
         title, body = title.strip()[:MAX_TITLE], body.strip()
         if not title or not body:
             raise ValueError("제목과 내용을 입력하세요.")
-        with self._lock:
-            post = Post(max(self._posts, default=0) + 1, title, body, author,
-                        now if now is not None else time.time())
-            self._posts[post.id] = post
-            self._comments[post.id] = []
+        ts = now if now is not None else time.time()
+        with self._engine.begin() as conn:
+            post_id = conn.execute(insert(db.posts).values(
+                title=title, body=body, author=author, ts=ts, user_id=user_id)).inserted_primary_key[0]
+        post = Post(post_id, title, body, author, ts, user_id)
         if self._listener:
             self._listener({"type": "post", **asdict(post)})
         return post
 
     def add_comment(self, post_id: int, author: str, text: str, is_ai: bool = False,
-                    now: float | None = None) -> Comment:
-        comment = Comment(post_id, author, text, now if now is not None else time.time(), is_ai)
-        with self._lock:
-            if post_id not in self._posts:
-                raise KeyError(f"글 #{post_id}이 없습니다.")
-            self._comments[post_id].append(comment)
+                    now: float | None = None, user_id: int | None = None) -> Comment:
+        if not self.post(post_id):
+            raise KeyError(f"글 #{post_id}이 없습니다.")
+        ts = now if now is not None else time.time()
+        with self._engine.begin() as conn:
+            comment_id = conn.execute(insert(db.comments).values(
+                post_id=post_id, author=author, text=text, is_ai=is_ai, ts=ts, user_id=user_id)).inserted_primary_key[0]
+        comment = Comment(post_id, author, text, ts, is_ai, comment_id, user_id)
         if self._listener:
             self._listener({"type": "comment", **asdict(comment)})
         return comment
 
     def posts(self) -> list[Post]:
-        """Newest first."""
-        with self._lock:
-            return sorted(self._posts.values(), key=lambda p: p.id, reverse=True)
+        """Visible posts, newest first."""
+        query = select(db.posts).where(db.posts.c.hidden_at.is_(None)).order_by(db.posts.c.id.desc())
+        with self._engine.connect() as conn:
+            return [_post(r) for r in conn.execute(query)]
 
     def post(self, post_id: int) -> Post | None:
-        with self._lock:
-            return self._posts.get(post_id)
+        query = select(db.posts).where(db.posts.c.id == post_id, db.posts.c.hidden_at.is_(None))
+        with self._engine.connect() as conn:
+            row = conn.execute(query).first()
+        return _post(row) if row else None
 
     def comments(self, post_id: int) -> list[Comment]:
-        with self._lock:
-            return list(self._comments.get(post_id, []))
+        c = db.comments.c
+        query = select(db.comments).where(c.post_id == post_id, c.hidden_at.is_(None)).order_by(c.id)
+        with self._engine.connect() as conn:
+            return [Comment(r.post_id, r.author, r.text, r.ts, r.is_ai, r.id, r.user_id) for r in conn.execute(query)]
 
-    def restore(self, records: list[dict]) -> None:
-        """Rebuild posts and comments from saved records, without re-notifying the listener."""
-        for r in sorted(records, key=lambda r: r.get("ts", 0)):
-            with self._lock:
-                if r.get("type") == "post":
-                    self._posts[r["id"]] = Post(r["id"], r["title"], r["body"], r["author"], r["ts"])
-                    self._comments.setdefault(r["id"], [])
-                elif r.get("type") == "comment" and r["post_id"] in self._posts:
-                    self._comments[r["post_id"]].append(
-                        Comment(r["post_id"], r["author"], r["text"], r["ts"], r.get("is_ai", False)))
+    def hide_post(self, post_id: int) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(update(db.posts).where(db.posts.c.id == post_id).values(hidden_at=time.time()))
+
+    def hide_comment(self, comment_id: int) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(update(db.comments).where(db.comments.c.id == comment_id).values(hidden_at=time.time()))
