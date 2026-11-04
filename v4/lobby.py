@@ -2,8 +2,11 @@
 
 Browsers in a room talk to each other directly over WebRTC data channels. The lobby
 only introduces them: it tells a newcomer who is in the room, and forwards the WebRTC
-offers/answers/ICE candidates between two peers. Chat messages never pass through it.
-If the lobby goes away, rooms that are already connected keep working; only new joins fail.
+offers/answers/ICE candidates between two peers. Chat messages don't pass through it,
+except as a fallback: when two browsers can't connect directly (strict mobile or office
+networks), they relay their already-signed messages through the lobby instead.
+If the lobby goes away, rooms that are already connected directly keep working; only new
+joins (and relayed links) fail.
 
 Each peer gets a join ticket: the lobby signs "room|peer id|join order|peer key id" with its
 ECDSA P-256 key, so no browser can claim an earlier join order (and with it the host role)
@@ -40,7 +43,8 @@ ROOM_RE = re.compile(r"^[a-z0-9]{4,16}$")
 KEY_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 MAX_PEERS_PER_ROOM = 30  # a full mesh gets heavy beyond a few dozen browsers
 MAX_ROOMS = 500
-MAX_SIGNAL_BYTES = 64_000  # an SDP with candidates is a few KB
+MAX_SIGNAL_BYTES = 64_000  # an SDP with candidates is a few KB; relayed data comes in chunks
+RELAY_PER_10S = 300  # relayed messages per peer per 10 seconds (a full history is ~100 chunks)
 DEFAULT_STUN = "stun:stun.l.google.com:19302"
 DEFAULT_MODELS = ["google/gemma-4-26B-A4B-it:deepinfra", "Qwen/Qwen3.6-27B", "Qwen/Qwen2.5-7B-Instruct"]
 OPERATOR_AI_PER_HOUR = int(os.environ.get("OPERATOR_AI_PER_HOUR", "60"))  # per IP
@@ -217,6 +221,7 @@ async def lobby(ws: WebSocket, room: str, key: str = ""):
         await ws.close(code=4002, reason="room is full")
         return
     peer_id, seq, existing = rooms.add(room, ws)
+    relayed: list[float] = []
     await ws.send_json({"type": "welcome", "id": peer_id, "seq": seq, "peers": existing,
                         "iceServers": ice_servers(), "ticket": sign_ticket(room, peer_id, seq, key),
                         "lobbyKey": public_jwk()})
@@ -230,11 +235,18 @@ async def lobby(ws: WebSocket, room: str, key: str = ""):
             except json.JSONDecodeError:
                 continue
             target = rooms.rooms.get(room, {}).get(msg.get("to"))
-            if msg.get("type") == "signal" and target is not None:
-                try:
-                    await target.send_json({"type": "signal", "from": peer_id, "data": msg.get("data")})
-                except RuntimeError:
-                    pass  # the target just left
+            kind = msg.get("type")
+            if kind not in ("signal", "relay") or target is None:
+                continue
+            if kind == "relay":
+                now = time.monotonic()
+                relayed[:] = [t for t in relayed if now - t < 10] + [now]
+                if len(relayed) > RELAY_PER_10S:
+                    continue  # too much: the sender's own retries and timeouts deal with it
+            try:
+                await target.send_json({"type": kind, "from": peer_id, "data": msg.get("data")})
+            except RuntimeError:
+                pass  # the target just left
     except WebSocketDisconnect:
         pass
     finally:

@@ -126,3 +126,15 @@ def test_ai_errors_do_not_leak_details(client, monkeypatch):
     monkeypatch.setattr(lobby, "chat_completion", boom)
     r = client.post("/api/ai", json={"messages": [{"role": "user", "content": "x"}], "token": "hf_secret"})
     assert r.status_code == 502 and "hf_secret" not in r.text
+
+
+def test_relay_forwards_data_between_named_peers_with_a_rate_limit(client, monkeypatch):
+    monkeypatch.setattr(lobby, "RELAY_PER_10S", 3)
+    with client.websocket_connect("/ws/room1?key=" + KEY) as a, client.websocket_connect("/ws/room1?key=" + KEY) as b:
+        ida, idb = a.receive_json()["id"], b.receive_json()["id"]
+        for i in range(5):
+            b.send_json({"type": "relay", "to": ida, "data": {"n": i}})
+        b.send_json({"type": "signal", "to": ida, "data": "after"})  # signals are not rate-limited
+        got = [a.receive_json() for _ in range(4)]
+        assert [g["data"] for g in got] == [{"n": 0}, {"n": 1}, {"n": 2}, "after"]
+        assert got[0] == {"type": "relay", "from": idb, "data": {"n": 0}}

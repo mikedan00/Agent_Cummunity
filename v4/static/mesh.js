@@ -1,6 +1,9 @@
 // Full-mesh WebRTC transport. The lobby only relays signals; everything else goes browser to browser.
 //
 // - The newcomer offers a connection to everyone already in the room (no offer collisions).
+// - If a direct link fails or doesn't open within FALLBACK_MS (strict mobile/office networks),
+//   that pair falls back to relaying through the lobby's websocket (route 📡). Messages are signed
+//   by their authors, so the lobby can pass them on but not change them. Big messages are chunked.
 // - Every ping carries the sender's direct links, so everyone also knows members it has no
 //   direct link to. Missing links are retried through the lobby (the newer peer offers).
 // - The host is computed, not negotiated: among eligible members, PCs before phones, then
@@ -17,7 +20,7 @@
 "use strict";
 
 const PING_MS = 4000, PEER_TIMEOUT_MS = 12000, LEFT_CHECK_MS = 3000;
-const CONNECT_TIMEOUT_MS = 20000, RETRY_MS = 30000;
+const FALLBACK_MS = 8000, RETRY_MS = 30000, CHUNK_CHARS = 15000;
 
 class Mesh extends EventTarget {
   constructor(room, keyId, device) {
@@ -30,6 +33,7 @@ class Mesh extends EventTarget {
     this.known = new Map(); // id -> {keyId, seq, device, seen}: members heard of through others
     this.gone = new Set(); // ids that left for good (bye / timeout / kicked)
     this.attempts = new Map(); // id -> last time we tried to (re)connect
+    this.chunks = new Map(); // "from:chunk id" -> parts of a relayed message
     this.host = null;
     this.iceServers = [];
     this.helloExtra = () => ({});
@@ -58,6 +62,8 @@ class Mesh extends EventTarget {
       for (const id of msg.peers) this.open(id, true);
     } else if (msg.type === "signal") {
       if (!this.gone.has(msg.from)) this.onSignal(msg.from, msg.data);
+    } else if (msg.type === "relay") {
+      if (!this.gone.has(msg.from)) this.onRelay(msg.from, msg.data);
     } else if (msg.type === "peer-left") {
       // Its lobby connection closed. Usually the tab is gone, but the data channel may still be fine
       // (only its lobby link dropped), so ask it directly before dropping.
@@ -75,16 +81,22 @@ class Mesh extends EventTarget {
 
   // ---- peer connections ----
 
-  isOpen(p) { return !!(p && p.dc && p.dc.readyState === "open"); }
+  lobbyOpen() { return !!(this.lobby && this.lobby.readyState === WebSocket.OPEN); }
+  isOpen(p) { return !!(p && (p.relay ? this.lobbyOpen() : p.dc && p.dc.readyState === "open")); }
 
   open(id, initiator) {
     this.attempts.set(id, Date.now());
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
     const peer = { pc, dc: null, info: null, route: "⏳", pending: [], lastSeen: Date.now(), created: Date.now() };
     this.peers.set(id, peer);
-    pc.onicecandidate = (e) => { if (e.candidate) this.signal(id, { candidate: e.candidate }); };
+    let candidates = 0;
+    pc.onicecandidate = (e) => { if (e.candidate) { candidates++; this.signal(id, { candidate: e.candidate }); } };
+    // Gathering finished without a single candidate: this network allows no direct link at all.
+    pc.onicegatheringstatechange = () => {
+      if (pc.iceGatheringState === "complete" && candidates === 0 && this.peers.get(id) === peer) this.useRelay(id);
+    };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed") { peer.route = "⚠️"; this.emit("peers"); }
+      if (pc.connectionState === "failed" && this.peers.get(id) === peer) this.useRelay(id);
     };
     if (initiator) {
       this.wire(id, pc.createDataChannel("mesh"));
@@ -98,6 +110,7 @@ class Mesh extends EventTarget {
 
   async onSignal(from, data) {
     let peer = this.peers.get(from);
+    if (peer && peer.relay) return; // this pair already talks through the lobby
     if (data.sdp && data.sdp.type === "offer" && peer) {
       // Both sides offered at once: the older member keeps its own offer and ignores this one.
       if (peer.pc.signalingState !== "stable" && this.me.seq < this.seqOf(from)) return;
@@ -135,7 +148,7 @@ class Mesh extends EventTarget {
 
   async detectRoute(id) {
     const peer = this.peers.get(id);
-    if (!peer) return;
+    if (!peer || peer.relay) return;
     const stats = await peer.pc.getStats();
     let pair = null;
     stats.forEach((s) => { if (s.type === "candidate-pair" && s.nominated && s.state === "succeeded") pair = s; });
@@ -149,7 +162,49 @@ class Mesh extends EventTarget {
     const peer = this.peers.get(id);
     if (!peer) return;
     this.peers.delete(id);
-    try { peer.pc.close(); } catch (e) { /* already closed */ }
+    try { if (peer.pc) peer.pc.close(); } catch (e) { /* already closed */ }
+  }
+
+  // ---- fallback: relaying through the lobby ----
+
+  useRelay(id, notify = true) {
+    const old = this.peers.get(id);
+    if (old && old.relay) return;
+    if (old && old.pc) { try { old.pc.close(); } catch (e) { /* already closed */ } }
+    const now = Date.now();
+    this.peers.set(id, { relay: true, pc: null, dc: null, info: old ? old.info : null, route: "📡", pending: [],
+      lastSeen: now, created: now });
+    if (notify) this.relaySend(id, { type: "relay-hello" });
+    this.relaySend(id, { type: "hello", seq: this.me.seq, device: this.me.device, ticket: this.me.ticket,
+      keyId: this.keyId, ...this.helloExtra() });
+    this.emit("peers");
+  }
+
+  relaySend(id, obj) {
+    if (!this.lobbyOpen()) return;
+    const text = JSON.stringify(obj);
+    if (text.length <= CHUNK_CHARS) { this.lobby.send(JSON.stringify({ type: "relay", to: id, data: obj })); return; }
+    const cid = crypto.randomUUID(), n = Math.ceil(text.length / CHUNK_CHARS);
+    for (let i = 0; i < n; i++) {
+      const part = text.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS);
+      this.lobby.send(JSON.stringify({ type: "relay", to: id, data: { type: "chunk", cid, i, n, part } }));
+    }
+  }
+
+  onRelay(from, data) {
+    if (!data || typeof data !== "object") return;
+    if (data.type === "chunk") {
+      const key = `${from}:${data.cid}`, n = Number(data.n);
+      if (!(n > 0 && n <= 200)) return;
+      const parts = this.chunks.get(key) || new Array(n);
+      parts[Number(data.i)] = String(data.part);
+      if (parts.filter((x) => x !== undefined).length < n) { this.chunks.set(key, parts); return; }
+      this.chunks.delete(key);
+      try { data = JSON.parse(parts.join("")); } catch (e) { return; }
+    }
+    if (data.type === "relay-hello") { this.useRelay(from, false); return; }
+    if (!this.isOpen(this.peers.get(from))) this.useRelay(from, false); // the other side already switched
+    this.onData(from, data);
   }
 
   drop(id, gone) {
@@ -176,8 +231,8 @@ class Mesh extends EventTarget {
       if (this.isOpen(p)) {
         if (now - p.lastSeen > PEER_TIMEOUT_MS) this.drop(id, true);
         else this.send(id, { type: "ping", links });
-      } else if (now - p.created > CONNECT_TIMEOUT_MS) {
-        this.discard(id); // never connected; relaying through others still works
+      } else if (!p.relay && now - p.created > FALLBACK_MS) {
+        this.useRelay(id); // no direct link: talk through the lobby instead
       }
     }
     for (const [id, k] of [...this.known]) {
@@ -192,7 +247,9 @@ class Mesh extends EventTarget {
 
   send(id, obj) {
     const peer = this.peers.get(id);
-    if (this.isOpen(peer)) peer.dc.send(JSON.stringify(obj));
+    if (!this.isOpen(peer)) return;
+    if (peer.relay) this.relaySend(id, obj);
+    else peer.dc.send(JSON.stringify(obj));
   }
 
   // filter(peerId, peer) -> bool decides who receives it (e.g. only admitted members)

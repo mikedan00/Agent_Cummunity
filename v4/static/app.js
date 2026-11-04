@@ -161,7 +161,7 @@ function renderPeers() {
   const agents = [...room.activeAgents().map((a) => `🤖 @${a.name}`), ...["Optimist", "Critic"].map((n) => `🤖 @${n} (포럼)`)];
   $("#agents").replaceChildren(...agents.map((a) => h("li", {}, a)));
   const connecting = [...room.mesh.peers.values()].filter((p) => !p.info || !room.mesh.isOpen(p));
-  for (const p of connecting) $("#peers").append(h("li", {}, p.route === "⚠️" ? "⚠️ 연결 실패 (TURN이 필요할 수 있음)" : "⏳ 연결 중…"));
+  for (const p of connecting) $("#peers").append(h("li", {}, "⏳ 연결 중…"));
 }
 
 // ---- forum ----
