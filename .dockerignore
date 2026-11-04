@@ -6,3 +6,6 @@ __pycache__
 .pytest_cache
 .streamlit/secrets.toml
 tests
+v2
+v3
+docs
