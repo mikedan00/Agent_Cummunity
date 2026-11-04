@@ -7,6 +7,7 @@ name: Sync to Hugging Face Space
 on:
   push:
     branches: [main]
+    paths-ignore: ["v2/**", "docs/**", ".github/workflows/sync-v2-to-hf-space.yml"]  # v2 has its own Space
   workflow_dispatch:
 
 jobs:

@@ -12,4 +12,5 @@ RUN pip install --no-cache-dir --user -r requirements.txt
 COPY --chown=user . .
 
 EXPOSE 7860
-CMD ["streamlit", "run", "app.py", "--server.port=7860", "--server.address=0.0.0.0", "--server.headless=true"]
+# write_secrets.py turns the AUTH_* environment variables into .streamlit/secrets.toml for st.login.
+CMD ["sh", "-c", "python write_secrets.py && exec streamlit run app.py --server.port=7860 --server.address=0.0.0.0 --server.headless=true"]
