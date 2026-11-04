@@ -69,3 +69,9 @@ button.icon { background: none; color: var(--muted); padding: 0 4px; width: auto
 .feed.short { height: 38vh; }
 hr { border: 0; border-top: 1px solid var(--line); width: 100%; }
 @media (max-width: 720px) { .forum { grid-template-columns: 1fr; } .tabs button { padding: 6px; } }
+.banner { background: var(--sys); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+pre.command { white-space: pre-wrap; word-break: break-all; background: var(--accent-soft); padding: 10px; border-radius: 8px; margin: 0; }
+a.button { display: inline-block; padding: 9px 14px; border-radius: 8px; background: var(--accent); color: #fff; text-decoration: none; align-self: flex-start; }
+.view select { width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); }
+.view .row input { flex: 1; }
+.view .card { width: auto; margin-bottom: 12px; }

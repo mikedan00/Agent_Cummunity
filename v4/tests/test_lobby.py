@@ -96,3 +96,33 @@ def test_missing_key_is_rejected(client):
     with client.websocket_connect("/ws/room1") as ws:
         with pytest.raises(Exception):
             ws.receive_json()
+
+
+def test_ai_uses_host_token_without_operator(client, monkeypatch):
+    seen = []
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(lobby, "chat_completion", lambda token, model, messages, max_tokens: seen.append((token, model)) or "답")
+    assert client.get("/api/ai/status").json()["operator"] is False
+    r = client.post("/api/ai", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 400 and "호스트의 HF 토큰" in r.json()["error"]
+    r = client.post("/api/ai", json={"messages": [{"role": "user", "content": "hi"}], "token": "hf_host", "model": "evil/model"})
+    assert r.json() == {"text": "답", "model": lobby.DEFAULT_MODELS[0]}  # unknown models fall back to the list
+    assert seen == [("hf_host", lobby.DEFAULT_MODELS[0])]
+
+
+def test_operator_token_is_rate_limited_per_ip(client, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "hf_operator")
+    monkeypatch.setattr(lobby, "OPERATOR_AI_PER_HOUR", 2)
+    monkeypatch.setattr(lobby, "quota", lobby.OperatorQuota())
+    monkeypatch.setattr(lobby, "chat_completion", lambda token, *a: token)
+    body = {"messages": [{"role": "user", "content": "hi"}]}
+    assert [client.post("/api/ai", json=body).status_code for _ in range(3)] == [200, 200, 429]
+    assert client.post("/api/ai", json={**body, "token": "hf_own"}).status_code == 200  # own token: no quota
+
+
+def test_ai_errors_do_not_leak_details(client, monkeypatch):
+    def boom(*a):
+        raise RuntimeError("401 for token hf_secret")
+    monkeypatch.setattr(lobby, "chat_completion", boom)
+    r = client.post("/api/ai", json={"messages": [{"role": "user", "content": "x"}], "token": "hf_secret"})
+    assert r.status_code == 502 and "hf_secret" not in r.text

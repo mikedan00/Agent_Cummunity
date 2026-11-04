@@ -40,6 +40,8 @@
       <button id="copy-link" class="secondary">초대 링크 복사</button>
       <h3>참여자</h3>
       <ul id="peers" class="list"></ul>
+      <h3>AI 에이전트</h3>
+      <ul id="agents" class="list small"></ul>
       <details class="hint"><summary>아이콘 설명</summary>
         👑 호스트 · 💻 PC/노트북 · 📱 휴대폰<br>연결: 🏠 같은 네트워크 · 🌐 직접(STUN) · 🔁 중계(TURN) · ↔️ 다른 참여자를 거쳐 · ⏳ 연결 중 · ⚠️ 실패</details>
       <button id="leave" class="secondary">나가기</button>
@@ -47,6 +49,8 @@
 
     <section class="view" id="view-chat">
       <p class="hint" id="admission"></p>
+      <div id="ai-banner" class="banner" hidden></div>
+      <p class="hint">🤖 <code>@AI</code>로 AI를, 포럼에서는 <code>@Critic</code>·<code>@Optimist</code>를, <code>@닉네임_claude</code>처럼 개인 AI를 부를 수 있습니다.</p>
       <div id="messages" class="feed"></div>
       <form id="send" class="composer">
         <textarea name="text" rows="2" maxlength="2000" placeholder="메시지 입력 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
@@ -86,6 +90,7 @@
   <script src="/static/crypto.js"></script>
   <script src="/static/mesh.js"></script>
   <script src="/static/room.js"></script>
+  <script src="/static/ai.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

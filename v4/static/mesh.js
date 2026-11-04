@@ -266,7 +266,8 @@ class Mesh extends EventTarget {
     if (best && best.id !== this.host) {
       const previous = this.host;
       this.host = best.id;
-      this.emit("host-changed", { previous, previousPresent: members.some((m) => m.id === previous) });
+      // "present" among everyone we see, not just those eligible to host
+      this.emit("host-changed", { previous, previousPresent: this.members().some((m) => m.id === previous) });
     }
   }
 

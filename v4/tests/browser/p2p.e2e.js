@@ -33,6 +33,9 @@ const peers = (p) => p.locator('#peers').innerText();
   const B = await joinLobby(b, '영희', false);
   await sleep(2000);
   step('three admitted; A sees ' + JSON.stringify(await peers(A)));
+  for (const p of [B, C]) {
+    if (await p.locator('#messages').getByText('이제 내가 호스트입니다').count()) throw new Error('a newcomer announced itself as host');
+  }
 
   await say(A, '안녕하세요 모두');
   await sees(B, '안녕하세요 모두'); await sees(C, '안녕하세요 모두');
@@ -56,7 +59,9 @@ const peers = (p) => p.locator('#peers').innerText();
   step('duplicate nickname refused');
 
   // Cut the direct B<->C link: messages still pass through A, and the link is repaired.
-  await B.evaluate(() => { const [, p] = [...room.mesh.peers.entries()].find(([, p]) => p.info && room.nameOf(p.info.keyId) === '폰사용자'); p.pc.close(); });
+  const linked = () => [...room.mesh.peers.values()].find((p) => p.info && room.mesh.isOpen(p) && room.nameOf(p.info.keyId) === '폰사용자');
+  await B.waitForFunction(`(${linked})()`, null, { timeout: 15000 });
+  await B.evaluate(`(${linked})().pc.close()`);
   await sleep(300);
   await say(B, 'A를 거쳐 가는 메시지');
   await sees(C, 'A를 거쳐 가는 메시지');

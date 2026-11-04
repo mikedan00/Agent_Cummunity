@@ -64,10 +64,14 @@ async function enter(code, password) {
   $("#room-name").textContent = code;
 
   room = new Room(code, nick, password, DEVICE, identity);
-  room.addEventListener("record", (e) => onRecord(e.detail));
+  await AI.init();
+  room.addEventListener("record", (e) => { onRecord(e.detail); AI.onRecord(room, e.detail); });
   room.addEventListener("history", () => renderAll());
-  room.addEventListener("change", () => { renderPeers(); renderAdmission(); });
-  room.addEventListener("admitted", () => { renderAll(); system(`'${code}' 방에 들어왔습니다.`); });
+  room.addEventListener("change", () => { renderPeers(); renderAdmission(); aiBanner(room); });
+  room.addEventListener("admitted", () => {
+    renderAll(); system(`'${code}' 방에 들어왔습니다.`);
+    if (AI.myAgent(room)) room.announceAgent(AI.settings.agentCli); // back with my agent
+  });
   room.addEventListener("denied", (e) => leaveWith(`입장이 거절되었습니다: ${e.detail.reason}`));
   room.addEventListener("removed", (e) => leaveWith(e.detail.banned ? "호스트가 이 방에서 차단했습니다." : "호스트가 내보냈습니다."));
   room.addEventListener("stuck", () => renderAdmission(true));
@@ -131,6 +135,7 @@ function onRecord(rec) {
   if (rec.kind === "post" && tab === "forum") renderPosts();
   if (rec.kind === "comment" && rec.post === currentPost && !$(`#comments [data-id="${rec.id}"]`)) insertSorted($("#comments"), itemView(rec));
   if (rec.kind === "comment" && tab === "forum") renderPosts();
+  if (rec.kind === "agent") renderPeers();
 }
 
 function renderAll() {
@@ -153,6 +158,8 @@ function renderPeers() {
     room.isHost() && !m.me && m.admitted ? h("span", { class: "tools" },
       h("button", { class: "icon", title: "내보내기", onclick: () => confirm(`${m.nickname}님을 내보낼까요?`) && room.moderate("kick", m.keyId) }, "🚪"),
       h("button", { class: "icon", title: "차단", onclick: () => confirm(`${m.nickname}님을 이 방에서 차단할까요?`) && room.moderate("ban", m.keyId) }, "⛔")) : null)));
+  const agents = [...room.activeAgents().map((a) => `🤖 @${a.name}`), ...["Optimist", "Critic"].map((n) => `🤖 @${n} (포럼)`)];
+  $("#agents").replaceChildren(...agents.map((a) => h("li", {}, a)));
   const connecting = [...room.mesh.peers.values()].filter((p) => !p.info || !room.mesh.isOpen(p));
   for (const p of connecting) $("#peers").append(h("li", {}, p.route === "⚠️" ? "⚠️ 연결 실패 (TURN이 필요할 수 있음)" : "⏳ 연결 중…"));
 }
