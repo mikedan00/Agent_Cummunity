@@ -1,0 +1,28 @@
+# Copies the v4/ folder (P2P lobby) of main to its own Hugging Face Space on every push that touches it.
+# Setup (GitHub repo → Settings → Secrets and variables → Actions):
+#   secret   HF_TOKEN     = Hugging Face token with write access to the Space
+#   variable HF_SPACE_V4  = <hf-username>/<space-name>, e.g. mikedan00/agent-community-p2p
+name: Sync v4 to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+    paths: ["v4/**"]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: vars.HF_SPACE_V4 != ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Push v4/ as the Space's root
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_V4: ${{ vars.HF_SPACE_V4 }}
+        run: |
+          git subtree split --prefix v4 -b v4-space
+          # --force: the Space's own first commit (generated README) is replaced.
+          git push --force "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_V4}" v4-space:main

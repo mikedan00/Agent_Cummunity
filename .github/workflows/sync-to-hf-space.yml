@@ -7,7 +7,7 @@ name: Sync to Hugging Face Space
 on:
   push:
     branches: [main]
-    paths-ignore: ["v2/**", "v3/**", "docs/**", ".github/workflows/sync-v2-to-hf-space.yml"]  # v2 has its own Space; v3 runs on laptops
+    paths-ignore: ["v2/**", "v3/**", "v4/**", "docs/**", ".github/workflows/sync-v2-to-hf-space.yml", ".github/workflows/sync-v4-to-hf-space.yml"]  # v2 and v4 have their own Spaces; v3 runs on laptops
   workflow_dispatch:
 
 jobs:
