@@ -56,3 +56,16 @@ button.secondary { background: var(--accent-soft); color: var(--accent); }
   .feed { height: 58vh; }
   .sidebar .list { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 }
+.tabs { display: flex; gap: 4px; }
+.tabs button { background: none; color: var(--muted); padding: 6px 10px; }
+.tabs button.active { background: var(--accent-soft); color: var(--accent); }
+.msg.ai { background: var(--accent-soft); }
+.badge { background: var(--accent); color: #fff; border-radius: 4px; padding: 0 5px; font-size: .72rem; margin-right: 6px; }
+button.icon { background: none; color: var(--muted); padding: 0 4px; width: auto; margin: 0; }
+.sidebar .tools button { width: auto; margin: 0; }
+.list li.selectable { cursor: pointer; display: block; border-bottom: 1px solid var(--line); padding: 6px; }
+.list li.selectable:hover, .list li.active { background: var(--accent-soft); }
+.forum { display: grid; grid-template-columns: minmax(180px, 1fr) 2fr; gap: 14px; margin-top: 10px; }
+.feed.short { height: 38vh; }
+hr { border: 0; border-top: 1px solid var(--line); width: 100%; }
+@media (max-width: 720px) { .forum { grid-template-columns: 1fr; } .tabs button { padding: 6px; } }

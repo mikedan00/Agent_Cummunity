@@ -9,19 +9,26 @@
 <body>
   <header class="topbar">
     <div class="brand">💬 Agent Community <span class="tag">P2P</span></div>
+    <nav class="tabs" id="tabs" hidden>
+      <button data-tab="chat" class="active">💬 채팅</button>
+      <button data-tab="forum">📝 포럼</button>
+      <button data-tab="ai">🤖 AI</button>
+    </nav>
     <div class="status" id="status"></div>
   </header>
 
   <main id="landing" class="landing">
     <div class="card stack">
       <h1>브라우저끼리 바로 연결되는 대화방</h1>
-      <p class="hint">로비 서버는 처음 연결할 때만 쓰고, 대화는 참여자의 브라우저끼리 직접 주고받습니다. 호스트가 나가면 다른 참여자가 자동으로 호스트를 이어받습니다.</p>
-      <label class="field">닉네임 <input id="nickname" maxlength="20" autocomplete="nickname"></label>
+      <p class="hint">로비 서버는 연결할 때만 쓰고, 대화는 참여자의 브라우저끼리 직접 주고받습니다. 호스트가 나가면 다른 참여자가 자동으로 호스트를 이어받습니다.</p>
+      <label class="field">닉네임 (2~20자: 한글, 영문, 숫자, _) <input id="nickname" maxlength="20" autocomplete="nickname"></label>
       <button id="join-default" class="primary">기본 대화방(lobby) 참여</button>
+      <hr>
+      <label class="field">방 코드 <input id="room-code" placeholder="받은 코드 또는 링크의 # 뒤" maxlength="16"></label>
+      <label class="field">입장 비밀번호 (방에 걸려 있을 때) <input id="room-password" type="password" autocomplete="off"></label>
       <div class="row">
-        <button id="create-room" class="secondary">새 방 만들기</button>
-        <input id="room-code" placeholder="방 코드" maxlength="16">
         <button id="join-code" class="secondary">코드로 참여</button>
+        <button id="create-room" class="secondary">새 방 만들기 (위 비밀번호로)</button>
       </div>
       <p class="error" id="landing-error"></p>
     </div>
@@ -37,17 +44,48 @@
         👑 호스트 · 💻 PC/노트북 · 📱 휴대폰<br>연결: 🏠 같은 네트워크 · 🌐 직접(STUN) · 🔁 중계(TURN) · ↔️ 다른 참여자를 거쳐 · ⏳ 연결 중 · ⚠️ 실패</details>
       <button id="leave" class="secondary">나가기</button>
     </aside>
-    <section class="view">
+
+    <section class="view" id="view-chat">
+      <p class="hint" id="admission"></p>
       <div id="messages" class="feed"></div>
       <form id="send" class="composer">
         <textarea name="text" rows="2" maxlength="2000" placeholder="메시지 입력 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
         <button>보내기</button>
       </form>
     </section>
+
+    <section class="view" id="view-forum" hidden>
+      <details id="new-post-box">
+        <summary>✏️ 새 글 쓰기</summary>
+        <form id="new-post" class="stack">
+          <input name="title" placeholder="제목" maxlength="100" required>
+          <textarea name="body" rows="4" placeholder="아이디어를 적어 주세요" required></textarea>
+          <button>등록</button>
+        </form>
+      </details>
+      <div class="forum">
+        <ul id="posts" class="list posts"></ul>
+        <div>
+          <div id="post"><p class="hint">글을 선택하세요.</p></div>
+          <div id="comments" class="feed short"></div>
+          <form id="comment" class="composer" hidden>
+            <textarea name="text" rows="2" maxlength="2000" placeholder="댓글"></textarea>
+            <button>댓글</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-ai" hidden>
+      <h2>🤖 AI</h2>
+      <div id="ai-panel"></div>
+    </section>
   </div>
 
   <div id="toast" class="toast" hidden></div>
+  <script src="/static/crypto.js"></script>
   <script src="/static/mesh.js"></script>
+  <script src="/static/room.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

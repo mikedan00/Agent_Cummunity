@@ -1,32 +1,40 @@
-// Full-mesh WebRTC room. The lobby only relays signals; every message goes browser to browser.
+// Full-mesh WebRTC transport. The lobby only relays signals; everything else goes browser to browser.
 //
 // - The newcomer offers a connection to everyone already in the room (no offer collisions).
-// - Messages are flooded: whoever sees a message for the first time stores it and passes it
-//   to its other peers, so a message gets through even if some direct links failed.
 // - Every ping carries the sender's direct links, so everyone also knows members it has no
 //   direct link to. Missing links are retried through the lobby (the newer peer offers).
-// - The host is computed, not negotiated: among all known members, PCs before phones, then
-//   whoever joined the lobby room first. When the host leaves, everyone picks the same next one.
+// - The host is computed, not negotiated: among eligible members, PCs before phones, then
+//   the earliest join order. The join order comes from a lobby-signed ticket, so nobody can
+//   claim to have joined first. When the host leaves, everyone picks the same next one.
 // - A peer silent for PEER_TIMEOUT_MS is gone (a closed tab can take WebRTC tens of seconds
 //   to notice). Leaving sends "bye" so others react at once.
+//
+// Join orders are only trusted with a valid lobby ticket (from a hello, or passed along in pings);
+// unverified members can't be host.
+//
+// Hooks set by the room: helloExtra() adds fields to our hello; onMessage(peerId, msg) gets
+// every non-transport message; eligible(member) decides who may be host.
 "use strict";
 
 const PING_MS = 4000, PEER_TIMEOUT_MS = 12000, LEFT_CHECK_MS = 3000;
 const CONNECT_TIMEOUT_MS = 20000, RETRY_MS = 30000;
 
 class Mesh extends EventTarget {
-  constructor(room, nickname, device) {
+  constructor(room, keyId, device) {
     super();
     this.room = room;
-    this.me = { id: null, seq: 0, nickname, device };
+    this.keyId = keyId;
+    this.me = { id: null, seq: 0, device, ticket: null };
+    this.lobbyKey = null;
     this.peers = new Map(); // id -> {pc, dc, info, route, pending, lastSeen, created}: direct links
-    this.known = new Map(); // id -> {nickname, seq, device, seen}: members heard of through others
-    this.gone = new Set(); // ids that left for good (bye / timeout)
+    this.known = new Map(); // id -> {keyId, seq, device, seen}: members heard of through others
+    this.gone = new Set(); // ids that left for good (bye / timeout / kicked)
     this.attempts = new Map(); // id -> last time we tried to (re)connect
-    this.log = new Map(); // message id -> message
     this.host = null;
     this.iceServers = [];
-    this.historyAsked = false;
+    this.helloExtra = () => ({});
+    this.onMessage = () => {};
+    this.eligible = () => true;
     this.heartbeat = setInterval(() => this.tick(), PING_MS);
   }
 
@@ -34,7 +42,7 @@ class Mesh extends EventTarget {
 
   connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    this.lobby = new WebSocket(`${proto}://${location.host}/ws/${this.room}`);
+    this.lobby = new WebSocket(`${proto}://${location.host}/ws/${this.room}?key=${encodeURIComponent(this.keyId)}`);
     this.lobby.onmessage = (e) => this.onLobby(JSON.parse(e.data));
     this.lobby.onclose = (e) => this.emit("lobby", { open: false, reason: e.reason });
     this.lobby.onopen = () => this.emit("lobby", { open: true });
@@ -42,11 +50,12 @@ class Mesh extends EventTarget {
 
   onLobby(msg) {
     if (msg.type === "welcome") {
-      Object.assign(this.me, { id: msg.id, seq: msg.seq });
+      Object.assign(this.me, { id: msg.id, seq: msg.seq, ticket: msg.ticket });
+      this.lobbyKey = msg.lobbyKey;
       this.iceServers = msg.iceServers;
+      this.emit("welcome", { alone: msg.peers.length === 0 });
       this.electHost();
       for (const id of msg.peers) this.open(id, true);
-      setTimeout(() => this.askHistory(), 2500);
     } else if (msg.type === "signal") {
       if (!this.gone.has(msg.from)) this.onSignal(msg.from, msg.data);
     } else if (msg.type === "peer-left") {
@@ -116,10 +125,11 @@ class Mesh extends EventTarget {
     const peer = this.peers.get(id);
     peer.dc = dc;
     dc.onopen = () => {
-      this.send(id, { type: "hello", nickname: this.me.nickname, seq: this.me.seq, device: this.me.device });
+      this.send(id, { type: "hello", seq: this.me.seq, device: this.me.device, ticket: this.me.ticket,
+        keyId: this.keyId, ...this.helloExtra() });
       this.detectRoute(id);
     };
-    dc.onmessage = (e) => { try { this.onData(id, JSON.parse(e.data)); } catch (err) { /* ignore bad data */ } };
+    dc.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (err) { return; } this.onData(id, m); };
     dc.onclose = () => { if (this.peers.get(id) === peer) this.drop(id, false); };
   }
 
@@ -149,7 +159,7 @@ class Mesh extends EventTarget {
     if (gone) {
       this.gone.add(id);
       this.known.delete(id);
-      if (info) this.emit("left", { nickname: info.nickname });
+      if (info) this.emit("left", { peerId: id, keyId: info.keyId });
     } else if (peer && peer.info) {
       this.known.set(id, { ...peer.info, seen: Date.now() }); // still in the room as far as we know
       this.attempts.delete(id); // a working link broke: retry at the next tick
@@ -160,8 +170,8 @@ class Mesh extends EventTarget {
 
   tick() {
     const now = Date.now();
-    const links = this.members().filter((m) => m.direct || m.me)
-      .map(({ id, nickname, seq, device }) => ({ id, nickname, seq, device }));
+    const links = this.members().filter((m) => (m.direct || m.me) && Number.isFinite(m.seq))
+      .map(({ id, keyId, seq, device, ticket }) => ({ id, keyId, seq, device, ticket }));
     for (const [id, p] of [...this.peers]) {
       if (this.isOpen(p)) {
         if (now - p.lastSeen > PEER_TIMEOUT_MS) this.drop(id, true);
@@ -174,7 +184,7 @@ class Mesh extends EventTarget {
       if (this.peers.has(id)) continue;
       if (now - k.seen > PEER_TIMEOUT_MS) { this.known.delete(id); continue; }
       // Try a direct link again; the newer member offers.
-      if (this.me.seq > k.seq && now - (this.attempts.get(id) || 0) > RETRY_MS) this.open(id, true);
+      if (Number.isFinite(k.seq) && this.me.seq > k.seq && now - (this.attempts.get(id) || 0) > RETRY_MS) this.open(id, true);
     }
     this.electHost();
     this.emit("peers");
@@ -185,71 +195,52 @@ class Mesh extends EventTarget {
     if (this.isOpen(peer)) peer.dc.send(JSON.stringify(obj));
   }
 
-  broadcast(obj, except) {
-    for (const id of this.peers.keys()) if (id !== except) this.send(id, obj);
+  // filter(peerId, peer) -> bool decides who receives it (e.g. only admitted members)
+  broadcast(obj, except, filter) {
+    for (const [id, p] of this.peers) if (id !== except && (!filter || filter(id, p))) this.send(id, obj);
   }
 
   // ---- data ----
 
-  onData(from, msg) {
+  async onData(from, msg) {
     const peer = this.peers.get(from);
     if (!peer) return;
     peer.lastSeen = Date.now();
     if (msg.type === "ping") {
       for (const m of Array.isArray(msg.links) ? msg.links.slice(0, 50) : []) {
-        if (m.id && m.id !== this.me.id && !this.peers.has(m.id) && !this.gone.has(m.id)) {
-          this.known.set(m.id, { nickname: String(m.nickname).slice(0, 20), seq: Number(m.seq),
-            device: m.device === "mobile" ? "mobile" : "pc", seen: Date.now() });
-        }
+        if (!m.id || m.id === this.me.id || this.isOpen(this.peers.get(m.id)) || this.gone.has(m.id)) continue;
+        const prev = this.known.get(m.id);
+        if (prev && prev.keyId === m.keyId) { prev.seen = Date.now(); continue; }
+        const entry = { keyId: String(m.keyId || ""), seq: Infinity, device: m.device === "mobile" ? "mobile" : "pc",
+          ticket: m.ticket, seen: Date.now() };
+        this.known.set(m.id, entry);
+        this.checkTicket(m.id, m.seq, entry.keyId, m.ticket).then((seq) => { entry.seq = seq; this.electHost(); this.emit("peers"); });
       }
       this.send(from, { type: "pong" });
+    } else if (msg.type === "pong") {
+      // lastSeen already updated
     } else if (msg.type === "bye") {
       this.drop(from, true);
     } else if (msg.type === "hello") {
-      const isNew = !peer.info && !this.known.has(from);
-      peer.info = { nickname: String(msg.nickname).slice(0, 20), seq: Number(msg.seq), device: msg.device === "mobile" ? "mobile" : "pc" };
+      const seq = await this.checkTicket(from, msg.seq, String(msg.keyId), msg.ticket);
+      if (!this.peers.has(from)) return;
+      peer.info = { keyId: String(msg.keyId), seq, device: msg.device === "mobile" ? "mobile" : "pc", ticket: msg.ticket };
       this.known.delete(from);
-      if (isNew) this.emit("joined", { nickname: peer.info.nickname });
       this.electHost();
-      if (this.isHost()) this.send(from, { type: "history", messages: this.messages() });
+      this.emit("hello", { peerId: from, hello: msg });
       this.emit("peers");
-    } else if (msg.type === "chat") {
-      if (this.store(msg)) this.broadcast(msg, from); // first time: pass it on
-    } else if (msg.type === "history") {
-      for (const m of (msg.messages || []).slice(-500)) this.store(m);
-      this.historyAsked = true;
-    } else if (msg.type === "need-history") {
-      this.send(from, { type: "history", messages: this.messages() });
+    } else {
+      this.onMessage(from, msg);
     }
   }
 
-  askHistory() {
-    // Normally the host sends history on hello; if no link to the host came up, ask any peer.
-    if (this.historyAsked) return;
-    const any = [...this.peers.entries()].find(([, p]) => this.isOpen(p));
-    if (any) { this.send(any[0], { type: "need-history" }); this.historyAsked = true; }
-  }
-
-  store(m) {
-    if (!m || typeof m.id !== "string" || this.log.has(m.id) || typeof m.text !== "string") return false;
-    const clean = { type: "chat", id: m.id.slice(0, 64), author: String(m.author).slice(0, 20),
-      text: m.text.slice(0, 2000), ts: Number(m.ts) || Date.now() };
-    this.log.set(clean.id, clean);
-    this.emit("message", clean);
-    return true;
-  }
-
-  say(text) {
-    const m = { type: "chat", id: crypto.randomUUID(), author: this.me.nickname, text, ts: Date.now() };
-    this.store(m);
-    this.broadcast(m);
-  }
-
-  messages() {
-    return [...this.log.values()].sort((a, b) => a.ts - b.ts).slice(-500);
-  }
-
   // ---- members & host ----
+
+  async checkTicket(peerId, seq, keyId, ticket) {
+    // The join order counts only if the lobby signed it for this peer id and key.
+    return this.lobbyKey && await verifyTicket(this.lobbyKey, this.room, peerId, Number(seq), keyId, ticket)
+      ? Number(seq) : Infinity;
+  }
 
   seqOf(id) {
     const p = this.peers.get(id);
@@ -260,14 +251,14 @@ class Mesh extends EventTarget {
     const direct = [...this.peers.entries()].filter(([, p]) => p.info && this.isOpen(p))
       .map(([id, p]) => ({ id, ...p.info, route: p.route, direct: true }));
     const indirect = [...this.known.entries()].filter(([id]) => !direct.some((d) => d.id === id))
-      .map(([id, k]) => ({ id, nickname: k.nickname, seq: k.seq, device: k.device, route: "↔️", direct: false }));
-    const me = { id: this.me.id, nickname: this.me.nickname, seq: this.me.seq, device: this.me.device, me: true };
+      .map(([id, k]) => ({ id, keyId: k.keyId, seq: k.seq, device: k.device, route: "↔️", direct: false }));
+    const me = { id: this.me.id, keyId: this.keyId, seq: this.me.seq, device: this.me.device, ticket: this.me.ticket, me: true };
     return [me, ...direct, ...indirect];
   }
 
   electHost() {
     const order = (m) => [m.device === "mobile" ? 1 : 0, m.seq];
-    const members = this.members().filter((m) => m.seq);
+    const members = this.members().filter((m) => m.seq && Number.isFinite(m.seq) && this.eligible(m));
     const best = [...members].sort((a, b) => {
       const [x, y] = [order(a), order(b)];
       return x[0] - y[0] || x[1] - y[1];
@@ -275,14 +266,11 @@ class Mesh extends EventTarget {
     if (best && best.id !== this.host) {
       const previous = this.host;
       this.host = best.id;
-      // Announce a handover only when the old host actually left (not when a newcomer
-      // first learns who was already hosting).
-      if (previous && !members.some((m) => m.id === previous)) {
-        this.emit("host", { nickname: best.nickname, me: best.id === this.me.id });
-      }
+      this.emit("host-changed", { previous, previousPresent: members.some((m) => m.id === previous) });
     }
   }
 
+  hostMember() { return this.members().find((m) => m.id === this.host); }
   isHost() { return this.host === this.me.id; }
 
   leave() {
