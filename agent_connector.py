@@ -297,7 +297,7 @@ def serve(server: Server, cli: str, path: str, auto_send: bool) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Agent Community 로컬 커넥터")
-    parser.add_argument("--server", help="커뮤니티 주소, 예: https://xxx.streamlit.app")
+    parser.add_argument("--server", help="커뮤니티 주소, 예: https://사용자-agent-community.hf.space")
     parser.add_argument("--token", help="웹의 '🔌 내 AI 연결' 탭에서 받은 토큰")
     parser.add_argument("--cli", choices=list(CLIS), help="사용할 CLI")
     parser.add_argument("--yes", action="store_true", help="확인 없이 답변 보내기 (권장하지 않음)")

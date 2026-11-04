@@ -4,6 +4,7 @@ Module state (not st.cache_resource) so the API routes in app.py, which run
 outside any Streamlit script, see the same object as the pages.
 """
 
+import json
 import os
 import threading
 
@@ -28,6 +29,16 @@ def get_setting(name: str, default=None):
     except Exception:  # no secrets.toml present
         pass
     return os.environ.get(name, default)
+
+
+def parse_models(value) -> list[str]:
+    """HF_MODELS from Streamlit Secrets is a list; from an environment variable (e.g. HF Spaces
+    secrets) it is a string: a JSON list or comma/newline-separated model ids."""
+    if not value:
+        return list(ai_agent.DEFAULT_MODELS)
+    if isinstance(value, str):
+        value = json.loads(value) if value.strip().startswith("[") else value.replace("\n", ",").split(",")
+    return [m.strip() for m in value if m.strip()]
 
 
 def get_community() -> tuple[Community, dict]:
@@ -62,7 +73,7 @@ def _build() -> tuple[Community, dict]:
             status["history_error"] = str(e)
 
     community = Community(chat, forum, load_agents(), hf_token,
-                          list(get_setting("HF_MODELS") or ai_agent.DEFAULT_MODELS),
+                          parse_models(get_setting("HF_MODELS")),
                           get_setting("TAVILY_API_KEY"), hub=hub)
     if telegram_token:
         try:

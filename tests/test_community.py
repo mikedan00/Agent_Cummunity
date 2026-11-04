@@ -189,3 +189,11 @@ def test_telegram_call_raises_on_api_error():
     http = NS(post=lambda url, json, timeout: NS(json=lambda: {"ok": False, "description": "Unauthorized"}))
     with pytest.raises(RuntimeError, match="Unauthorized"):
         TelegramBridge("bad", make_community(), http=http).call("getMe")
+
+
+def test_parse_models_accepts_list_or_env_string():
+    from state import parse_models
+    assert parse_models(None) == ai_agent.DEFAULT_MODELS
+    assert parse_models(["a/b", " c/d "]) == ["a/b", "c/d"]
+    assert parse_models('["a/b:prov", "c/d"]') == ["a/b:prov", "c/d"]
+    assert parse_models("a/b, c/d\ne/f") == ["a/b", "c/d", "e/f"]

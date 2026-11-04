@@ -1,0 +1,25 @@
+# Copies main to the Hugging Face Space on every push, so the Space redeploys.
+# Setup (GitHub repo → Settings → Secrets and variables → Actions):
+#   secret   HF_TOKEN  = Hugging Face token with write access to the Space
+#   variable HF_SPACE  = <hf-username>/<space-name>, e.g. mikedan00/agent-community
+name: Sync to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: vars.HF_SPACE != ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Push to Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        # --force: the Space's own first commit (generated README) is replaced by this repo's history.
+        run: git push --force "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" HEAD:main
