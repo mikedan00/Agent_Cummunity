@@ -23,6 +23,10 @@ class UserStore:
         self._engine = engine or db.make_engine("sqlite://")
         self._admin_emails = {e.strip().lower() for e in (admin_emails or set()) if e.strip()}
 
+    @property
+    def engine(self) -> Engine:
+        return self._engine
+
     def login(self, issuer: str, subject: str, email: str | None) -> User:
         """Find or create the account for this identity; refresh email and admin role."""
         u = db.users.c

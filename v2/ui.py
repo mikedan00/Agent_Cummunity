@@ -53,6 +53,9 @@ with st.sidebar:
                     st.error(str(e))
     else:
         st.caption(f"👤 **{nickname}** · {user.email or ''}" + (" · 관리자" if user.is_admin else ""))
+        limits = community.limits
+        st.caption(f"오늘 사용: AI {limits.used(user, 'ai_chat')}/{limits.limit(user, 'ai_chat')}회 · "
+                   f"글 {limits.used(user, 'forum_post')}/{limits.limit(user, 'forum_post')}개")
     if user:
         st.button("로그아웃", on_click=auth.logout)
         if user.banned:
@@ -120,9 +123,12 @@ with chat_tab:
     chat_view()
     placeholder = f"메시지 입력 (@AI{' 또는 ' + ai_name if ai_name else ''} 로 AI 호출)"
     if can_write and (text := st.chat_input(placeholder, max_chars=MAX_MESSAGE_LEN)):
-        with st.spinner("AI가 답변을 작성 중입니다..."):
-            community.send_chat(room, nickname, text, hf_model, user=user)
-        st.rerun()
+        try:
+            with st.spinner("AI가 답변을 작성 중입니다..."):
+                community.send_chat(room, nickname, text, hf_model, user=user)
+            st.rerun()
+        except ValueError as e:  # sending too fast
+            st.error(str(e))
 
 # ---- Forum ----
 with forum_tab:
