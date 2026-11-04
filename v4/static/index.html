@@ -1,1 +1,53 @@
-<!doctype html><title>lobby</title>
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Community P2P</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">💬 Agent Community <span class="tag">P2P</span></div>
+    <div class="status" id="status"></div>
+  </header>
+
+  <main id="landing" class="landing">
+    <div class="card stack">
+      <h1>브라우저끼리 바로 연결되는 대화방</h1>
+      <p class="hint">로비 서버는 처음 연결할 때만 쓰고, 대화는 참여자의 브라우저끼리 직접 주고받습니다. 호스트가 나가면 다른 참여자가 자동으로 호스트를 이어받습니다.</p>
+      <label class="field">닉네임 <input id="nickname" maxlength="20" autocomplete="nickname"></label>
+      <button id="join-default" class="primary">기본 대화방(lobby) 참여</button>
+      <div class="row">
+        <button id="create-room" class="secondary">새 방 만들기</button>
+        <input id="room-code" placeholder="방 코드" maxlength="16">
+        <button id="join-code" class="secondary">코드로 참여</button>
+      </div>
+      <p class="error" id="landing-error"></p>
+    </div>
+  </main>
+
+  <div id="room" class="layout" hidden>
+    <aside class="sidebar">
+      <h3>방 <code id="room-name"></code></h3>
+      <button id="copy-link" class="secondary">초대 링크 복사</button>
+      <h3>참여자</h3>
+      <ul id="peers" class="list"></ul>
+      <details class="hint"><summary>아이콘 설명</summary>
+        👑 호스트 · 💻 PC/노트북 · 📱 휴대폰<br>연결: 🏠 같은 네트워크 · 🌐 직접(STUN) · 🔁 중계(TURN) · ↔️ 다른 참여자를 거쳐 · ⏳ 연결 중 · ⚠️ 실패</details>
+      <button id="leave" class="secondary">나가기</button>
+    </aside>
+    <section class="view">
+      <div id="messages" class="feed"></div>
+      <form id="send" class="composer">
+        <textarea name="text" rows="2" maxlength="2000" placeholder="메시지 입력 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
+        <button>보내기</button>
+      </form>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/mesh.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
