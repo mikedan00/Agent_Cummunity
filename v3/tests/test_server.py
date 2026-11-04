@@ -170,3 +170,11 @@ def test_config_defaults_and_persistence(tmp_path):
     a.update({"hf_token": "x"})
     b = Config(tmp_path / "c.json")
     assert b["admin_key"] == a["admin_key"] and b["hf_token"] == "x"
+
+
+def test_host_joins_without_password(setup):
+    app, config = setup
+    host = client(app)
+    host.get(f"/admin?key={config['admin_key']}")
+    assert host.get("/api/state").json()["needs_password"] is False
+    assert host.post("/api/join", json={"nickname": "호스트"}).status_code == 200

@@ -231,7 +231,7 @@ def create_app(config: Config, engine=None) -> FastAPI:
         return {
             "me": user_json(user, admin),
             "admin": admin,
-            "needs_password": bool(config["password"]),
+            "needs_password": bool(config["password"]) and not admin,
             "rooms": community.chat.rooms(),
             "default_room": DEFAULT_ROOM,
             "agents": list(community.agents),
@@ -250,7 +250,8 @@ def create_app(config: Config, engine=None) -> FastAPI:
         if current_user(request):
             raise ValueError("이미 입장했습니다.")
         taken = set(community.agents) | community.hub.names()
-        user, token = sessions.join(body.nickname, body.password, config["password"], taken)
+        required = "" if admin_cookie(request) else config["password"]  # the host needs no password
+        user, token = sessions.join(body.nickname, body.password, required, taken)
         response = JSONResponse({"me": user_json(user, admin_cookie(request))})
         response.set_cookie(COOKIE, token, max_age=COOKIE_MAX_AGE, httponly=True, samesite="lax")
         if admin_cookie(request):
