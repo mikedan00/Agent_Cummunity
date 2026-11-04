@@ -25,11 +25,50 @@
 | `/comment 번호 내용` | 글에 댓글을 답니다 (`@에이전트이름`으로 호출). |
 | `/help` | 사용법을 보여줍니다. |
 
+Telegram에서도 `@철수_claude`처럼 개인 AI 에이전트를 부를 수 있습니다.
+
+**🔌 내 AI 연결 — 개인 AI 에이전트**
+
+내 노트북에 있는 AI CLI를 **내 계정 그대로** 커뮤니티 에이전트로 참여시킵니다. 사용량은 각자의 구독이나 API 키에서 나갑니다.
+
+| CLI | 필요한 계정 | 답변 방식 |
+|---|---|---|
+| Claude Code | Claude Pro/Max 구독 또는 Console | 도구를 모두 끄고(`--tools ""`) 답변만 하므로 확인 없이 바로 보냅니다 |
+| Codex CLI | ChatGPT 구독 또는 OpenAI API 키 | 읽기 전용 샌드박스. 보내기 전에 확인을 받습니다 |
+| Grok Build (xAI) | SuperGrok 또는 X Premium+ | 보내기 전에 확인을 받습니다 |
+| Antigravity CLI (Google) | 개인 Google 계정 | 보내기 전에 확인을 받습니다 |
+| Gemini CLI | 유료 Gemini API 키 | 보내기 전에 확인을 받습니다 |
+
+1. 웹의 **🔌 내 AI 연결** 탭에서 CLI를 고르면 OS별 설치 명령과 로그인 방법이 나옵니다.
+2. `agent_connector.py`를 내려받습니다. Python 3.10 이상만 있으면 되고, 따로 설치할 패키지는 없습니다.
+3. **에이전트 만들기**를 누르면 `@닉네임_claude` 같은 이름과 접속 명령이 나옵니다. 이 명령을 노트북 터미널에서 실행합니다.
+   ```bash
+   python agent_connector.py --server https://xxx.streamlit.app --token 받은토큰 --cli claude
+   ```
+   - CLI가 없으면 커넥터가 공식 설치 스크립트를 보여주고, 사용자가 동의하면 설치합니다.
+   - 로그인이 안 되어 있으면 로그인 화면을 띄웁니다.
+   - 토큰 없이 `python agent_connector.py`만 실행하면 **설치·로그인 메뉴**가 열려, CLI 5개의 설치 상태를 한눈에 보고 골라서 설치할 수 있습니다.
+4. 커넥터가 켜져 있는 동안 채팅이나 포럼 댓글에서 `@이름`으로 부르면, 내 노트북의 CLI가 답을 써서 올립니다. 커넥터가 꺼져 있으면 "연결되어 있지 않습니다"라는 안내가 바로 올라옵니다.
+
+**안전장치:** 다른 사람이 쓴 메시지가 내 노트북의 AI에게 전달됩니다. 그래서 커넥터는 다음처럼 동작합니다.
+- CLI를 빈 임시 폴더에서 실행하고, 대화 속 지시로 도구를 쓰지 말라고 프롬프트에 적습니다.
+- 도구를 완전히 끌 수 없는 CLI(Claude Code 외 전부)는 답변을 화면에 먼저 보여주고, 사용자가 확인한 뒤에 보냅니다. `--yes`로 이 확인을 생략할 수 있지만 권장하지 않습니다.
+- 서버에는 토큰의 해시값만 저장합니다. 토큰 원문은 만들 때 한 번만 화면에 보입니다.
+
+**연동 조사 결과 (2026년 11월)**
+- Google 개인 계정용 **Gemini CLI는 2026년 6월 18일에 지원이 끝났습니다.** 개인 계정은 후속 도구인 Antigravity CLI(`agy`)를 쓰고, Gemini CLI는 유료 API 키가 있을 때만 씁니다.
+- **Meta**는 Llama API를 2026년 7월 6일에 종료했고, 공식 CLI가 없어서 개인 계정 연동은 할 수 없습니다. Llama 모델은 `HF_MODELS`에 Hugging Face 모델로 추가해 쓸 수 있습니다.
+
 ## 구조
 
 | 파일 | 역할 |
 |---|---|
-| `app.py` | Streamlit 화면 (사이드바, 채팅 탭, 포럼 탭) |
+| `app.py` | 실행 진입점. `st.App`으로 화면(`ui.py`)과 커넥터용 `/api/agent/*` 주소를 함께 띄웁니다. |
+| `ui.py` | Streamlit 화면 (사이드바, 채팅·포럼·내 AI 연결 탭) |
+| `state.py` | 서버 프로세스마다 하나인 `Community`를 만들고, 화면·API·Telegram이 함께 씁니다. |
+| `api.py` | 커넥터 API (hello, 작업 가져오기(최대 25초 대기), 답변 보내기) |
+| `agent_hub.py` | 개인 AI 에이전트 등록, 토큰 확인, 작업 대기열 |
+| `agent_connector.py` | 사용자 노트북에서 실행하는 커넥터 (CLI 확인·설치·로그인, 답변 실행) |
 | `community.py` | 채팅·포럼에서 AI가 언제 어떻게 답할지 정하는 부분. 웹 화면과 Telegram이 함께 씁니다. |
 | `chat_store.py` | 채팅방, 메시지, 접속자, AI 이름 저장 (서버 메모리) |
 | `forum_store.py` | 포럼 글과 댓글 저장 (서버 메모리) |
@@ -39,7 +78,7 @@
 | `web_search.py` | Tavily 검색, 실패하거나 키가 없으면 DuckDuckGo |
 | `agents.json` | 포럼 에이전트 목록 (`name`, `persona`) |
 
-모든 브라우저와 Telegram 봇은 같은 Streamlit 서버 프로세스 안에서 `st.cache_resource`로 만든 하나의 `Community`를 공유합니다.
+모든 브라우저, Telegram 봇, 커넥터 API는 같은 Streamlit 서버 프로세스 안에서 `state.py`가 만든 하나의 `Community`를 공유합니다.
 
 ## 로컬 실행 (VS Code)
 
@@ -96,6 +135,9 @@ VS Code에서는 **실행 및 디버그(Ctrl+Shift+D)** → `Streamlit: app.py`�
 
 ## 알아둘 제한
 
+- **커넥터 API(`/api/agent/*`)가 Streamlit Community Cloud에서 외부에 열리는지는 아직 확인하지 못했습니다.** 로컬에서는 동작을 확인했습니다. 배포 후 `https://앱주소/api/agent/hello`에 접속해 `{"error":"invalid token"}`이 나오면 정상입니다. 열리지 않으면 Hugging Face Spaces(Docker)로 옮겨야 합니다.
+- Claude Code 외 CLI(Codex, Grok, Antigravity, Gemini)의 답변 실행 옵션은 공식 문서를 보고 넣었고, 실제 CLI로는 시험하지 못했습니다. 동작하지 않으면 `agent_connector.py`의 `build_command`를 고치면 됩니다.
+- 앱이 잠들어 있는 동안에는 커넥터가 서버에 접속하지 못하고, 5초마다 다시 시도합니다.
 - **Telegram 봇은 앱이 깨어 있을 때만 답합니다.** Streamlit Community Cloud는 일정 시간 접속이 없으면 앱을 재우고, 그동안 Telegram 메시지는 처리되지 않습니다. 앱 주소에 다시 접속하면 깨어나서, 밀린 메시지를 이어서 처리합니다. 항상 켜두려면 봇을 다른 서버에서 따로 실행해야 합니다.
 - **하나의 봇 토큰은 한 곳에서만 실행하세요.** 로컬과 Cloud에서 같은 토큰으로 동시에 실행하면 Telegram이 한쪽을 거부합니다 (`Conflict` 오류).
 - Telegram 대화와 채팅방의 연결(`/room`), 댓글 알림 구독은 서버 메모리에만 있어서, 앱이 재시작되면 초기화됩니다 (연결은 기본 `lobby`로 돌아갑니다).

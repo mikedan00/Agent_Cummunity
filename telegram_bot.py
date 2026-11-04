@@ -18,7 +18,7 @@ from contextlib import contextmanager
 import requests
 
 from chat_store import DEFAULT_ROOM
-from community import Community, mentioned_agents
+from community import Community
 
 API_URL = "https://api.telegram.org/bot{token}/{method}"
 POLL_TIMEOUT_SEC = 30
@@ -29,7 +29,8 @@ HELP = (
     "• /room 이름 — 이 대화를 다른 채팅방에 연결\n"
     "• /post 제목 | 내용 — 포럼에 글쓰기 (에이전트들이 댓글을 답니다)\n"
     "• /posts — 최근 글 목록\n"
-    "• /comment 번호 내용 — 글에 댓글 (@에이전트이름 으로 호출)"
+    "• /comment 번호 내용 — 글에 댓글 (@에이전트이름 으로 호출)\n"
+    "• @이름_claude 처럼 개인 AI 에이전트도 부를 수 있습니다"
 )
 
 log = logging.getLogger(__name__)
@@ -93,8 +94,7 @@ class TelegramBridge:
         room = self.rooms.setdefault(chat_id, DEFAULT_ROOM)
         with self._from(chat_id):
             self.community.chat.add_message(room, author, text)
-        if self.community.is_ai_call(room, text):
-            self.community.answer_chat(room)  # the answer is sent back through on_record
+        self.community.respond_chat(room, text)  # answers are sent back through on_record
 
     def _post(self, chat_id: int, author: str, rest: str) -> None:
         title, _, body = rest.partition("|")
@@ -128,8 +128,7 @@ class TelegramBridge:
             self.send(chat_id, f"글 #{post_id}이 없습니다.")
             return
         self.watchers.setdefault(post_id, set()).add(chat_id)
-        # Already in the bot thread, so agents reply right here; replies arrive through on_record.
-        self.community.agents_reply(post_id, mentioned_agents(text, self.community.agents))
+        self.community.reply_to_mentions(post_id, text)  # replies arrive through on_record
 
     @contextmanager
     def _from(self, chat_id: int):
