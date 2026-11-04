@@ -1,0 +1,192 @@
+import uuid
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import streamlit as st
+
+import agent_connector
+import ai_agent
+from chat_store import DEFAULT_ROOM
+from state import get_community
+
+REFRESH_SEC = 2
+MAX_MESSAGE_LEN = 1000
+MAX_NICKNAME = 20
+CONNECTOR_FILE = Path(__file__).parent / "agent_connector.py"
+
+st.set_page_config(page_title="Agent Community", page_icon="💬")
+
+community, status = get_community()
+chat, forum, hub = community.chat, community.forum, community.hub
+hf_token, hf_models = community.hf_token, community.models
+dataset_repo, tavily_key = status["dataset_repo"], community.tavily_key
+
+if "session_id" not in st.session_state:
+    st.session_state.session_id = uuid.uuid4().hex
+if "room" not in st.session_state:
+    st.session_state.room = DEFAULT_ROOM
+
+
+def fmt_time(ts: float) -> str:
+    return f"{datetime.fromtimestamp(ts, ai_agent.TIMEZONE):%m-%d %H:%M:%S}"
+
+
+# ---- Sidebar: nickname, rooms, AI and integration status ----
+with st.sidebar:
+    st.header("💬 Agent Community")
+    nickname = st.text_input("닉네임", max_chars=MAX_NICKNAME, key="nickname").strip()
+
+    # The form comes before the room selectbox: a widget's session_state key
+    # can only be set before that widget is drawn in the current run.
+    with st.form("new_room", clear_on_submit=True):
+        new_room = st.text_input("새 채팅방 만들기")
+        if st.form_submit_button("만들기") and new_room.strip():
+            st.session_state.room = chat.create_room(new_room)
+
+    st.selectbox("채팅방", chat.rooms(), key="room")
+
+    st.divider()
+    hf_model = None
+    if hf_token:
+        st.success("AI 연결됨")
+        hf_model = st.selectbox("AI 모델", hf_models, key="hf_model")
+        st.caption("🔎 검색: " + ("Tavily (실패 시 DuckDuckGo)" if tavily_key else "DuckDuckGo"))
+    else:
+        st.warning("HF_TOKEN이 설정되지 않아 AI를 사용할 수 없습니다.")
+    st.caption("포럼 에이전트: " + ", ".join(f"`@{n}`" for n in community.agents))
+    if personal := hub.agents():
+        st.caption("개인 AI 에이전트:\n\n" + "\n\n".join(community.personal_label(a) for a in personal))
+
+    if "history_error" in status:
+        st.error(f"대화 기록 저장 실패: {status['history_error']}")
+    elif dataset_repo and hf_token:
+        st.caption(f"💾 기록 저장: `{dataset_repo}` (1분마다)")
+    else:
+        st.caption("💾 기록 저장 꺼짐 (HF_DATASET_REPO 미설정)")
+
+    if "telegram_error" in status:
+        st.error(f"Telegram 연결 실패: {status['telegram_error']}")
+    elif "telegram_bot" in status:
+        st.caption(f"📨 Telegram: [@{status['telegram_bot']}](https://t.me/{status['telegram_bot']})")
+    else:
+        st.caption("📨 Telegram 꺼짐 (TELEGRAM_BOT_TOKEN 미설정)")
+
+if not nickname:
+    st.info("왼쪽 사이드바에 닉네임을 입력하면 대화에 참여할 수 있습니다.")
+    st.stop()
+
+chat_tab, forum_tab, connect_tab = st.tabs(["💬 채팅", "📝 포럼", "🔌 내 AI 연결"])
+
+# ---- Chat ----
+room = st.session_state.room
+ai_name = chat.ai_name(room)
+
+
+@st.fragment(run_every=REFRESH_SEC)
+def chat_view():
+    chat.touch(room, st.session_state.session_id, nickname)
+    st.caption("접속 중: " + ", ".join(chat.online(room)))
+    for m in chat.messages(room):
+        with st.chat_message("assistant" if m.is_ai else "user", avatar="🤖" if m.is_ai else None):
+            st.markdown(f"**{m.author}** · {fmt_time(m.ts)}")
+            st.markdown(m.text)
+
+
+with chat_tab:
+    st.subheader(f"# {room}")
+    st.caption("🤖 AI 호출: `@AI`" + (f" 또는 `{ai_name}`" if ai_name else "") +
+               " — 이름을 지어주려면 `@AI 너의 이름은 모모야`. 개인 AI 에이전트는 `@이름_claude`처럼 부르세요.")
+    chat_view()
+    placeholder = f"메시지 입력 (@AI{' 또는 ' + ai_name if ai_name else ''} 로 AI 호출)"
+    if text := st.chat_input(placeholder, max_chars=MAX_MESSAGE_LEN):
+        with st.spinner("AI가 답변을 작성 중입니다..."):
+            community.send_chat(room, nickname, text, hf_model)
+        st.rerun()
+
+# ---- Forum ----
+with forum_tab:
+    with st.expander("✏️ 새 아이디어 올리기"):
+        with st.form("new_post", clear_on_submit=True):
+            title = st.text_input("제목", max_chars=100)
+            body = st.text_area("내용", placeholder="아이디어를 적으면 에이전트들이 댓글을 답니다.")
+            if st.form_submit_button("등록"):
+                try:
+                    st.session_state.post_id = community.create_post(title, body, nickname, hf_model).id
+                except ValueError as e:
+                    st.error(str(e))
+
+    posts = forum.posts()
+    if not posts:
+        st.info("아직 글이 없습니다. 첫 아이디어를 올려보세요.")
+    else:
+        titles = {p.id: f"#{p.id} {p.title} — {p.author}" for p in posts}
+        if st.session_state.get("post_id") not in titles:
+            st.session_state.post_id = posts[0].id
+        post_id = st.selectbox("글 선택", list(titles), format_func=titles.get, key="post_id")
+
+        @st.fragment(run_every=REFRESH_SEC)
+        def post_view():
+            post = forum.post(post_id)
+            with st.container(border=True):
+                st.markdown(f"### {post.title}")
+                st.caption(f"{post.author} · {fmt_time(post.ts)}")
+                st.markdown(post.body)
+            for c in forum.comments(post_id):
+                with st.chat_message("assistant" if c.is_ai else "user", avatar="🤖" if c.is_ai else None):
+                    st.markdown(f"**{c.author}** · {fmt_time(c.ts)}")
+                    st.markdown(c.text)
+
+        post_view()
+        with st.form("new_comment", clear_on_submit=True):
+            comment = st.text_area("댓글", placeholder="@" + " @".join(community.agents) + " 로 에이전트를 부를 수 있습니다.")
+            if st.form_submit_button("댓글 등록") and comment.strip():
+                community.add_comment(post_id, nickname, comment.strip(), hf_model)
+                st.rerun()
+
+# ---- Connect your own AI CLI ----
+with connect_tab:
+    st.markdown(
+        "내 노트북의 **Claude Code · Codex · Grok · Antigravity · Gemini CLI**를 내 계정 그대로 "
+        "커뮤니티의 AI 에이전트로 참여시킵니다. 사용량은 **내 구독/키**에서 나갑니다.\n\n"
+        "브라우저는 노트북의 프로그램을 직접 실행할 수 없어서, 노트북에서 **커넥터**를 한 번 실행합니다. "
+        "커넥터가 CLI 설치 여부를 확인하고, 없으면 설치와 로그인을 안내합니다.")
+    cli = st.selectbox("사용할 CLI", list(agent_connector.CLIS),
+                       format_func=lambda k: agent_connector.CLIS[k]["label"], key="connect_cli")
+    spec = agent_connector.CLIS[cli]
+    st.caption(f"필요한 계정: {spec['account']} · [공식 안내]({spec['docs']})")
+    if spec.get("note"):
+        st.warning(spec["note"])
+    if not spec["safe"]:
+        st.info("이 CLI는 도구를 완전히 끌 수 없어서, 커넥터가 답변을 보내기 전에 노트북에서 확인을 받습니다.")
+
+    st.markdown("**1. CLI 설치** — 이미 있으면 건너뛰세요. 커넥터도 확인 후 설치를 제안합니다.")
+    posix_tab, windows_tab = st.tabs(["macOS / Linux", "Windows (PowerShell)"])
+    posix_tab.code(spec["install"]["posix"], language="bash")
+    if spec["install"]["windows"]:
+        windows_tab.code(spec["install"]["windows"], language="powershell")
+    else:
+        windows_tab.write(f"공식 Windows 설치 명령을 확인하지 못했습니다. [공식 안내]({spec['docs']})를 보세요.")
+
+    st.markdown("**2. 로그인**")
+    if spec["login"]:
+        st.code(" ".join(spec["login"]), language="bash")
+    st.caption(spec["login_hint"])
+
+    st.markdown("**3. 커넥터 받기** (Python 3.10 이상만 있으면 됩니다)")
+    st.download_button("⬇️ agent_connector.py 다운로드", CONNECTOR_FILE.read_bytes(), "agent_connector.py",
+                       mime="text/x-python")
+    st.caption("토큰 없이 `python agent_connector.py`만 실행하면 설치·로그인 메뉴가 열립니다.")
+
+    st.markdown("**4. 내 에이전트 만들기**")
+    if st.button(f"@{nickname}_{cli} 에이전트 만들기"):
+        agent, token = hub.create(nickname, cli)
+        st.session_state.new_agent = {"name": agent.name, "cli": cli, "token": token}
+    if new := st.session_state.get("new_agent"):
+        url = urlsplit(st.context.url or "http://localhost:8501")
+        server = f"{url.scheme}://{url.netloc}"
+        st.success(f"@{new['name']} 를 만들었습니다. 노트북 터미널에서 아래 명령을 실행하세요.")
+        st.code(f"python agent_connector.py --server {server} --token {new['token']} --cli {new['cli']}",
+                language="bash")
+        st.warning("토큰은 지금 한 번만 보입니다. 다른 사람에게 보여주지 마세요 — 토큰이 있으면 이 에이전트로 답할 수 있습니다.")
+    st.caption("커넥터가 켜져 있는 동안 채팅이나 포럼 댓글에서 `@이름`으로 부르면 답합니다.")
